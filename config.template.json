@@ -1,0 +1,17 @@
+{
+  "name": "strata-ledger-proxy",
+  "mode": "proxy",
+  "out_dir": "@here/data",
+  "web_root": "",
+  "listen": "0.0.0.0:8080",
+  "upstream": "http://127.0.0.1:8787",
+  "lock_port": 43177,
+  "watchdog_lock_port": 43176,
+  "report_hour": 0,
+  "report_minute": 0,
+  "force_include_usage": true,
+  "watchdog_interval_s": 5,
+  "watchdog_relaunch_cooldown_s": 5,
+  "key_labels": {},
+  "comment": "改这三项就能换机器：listen（团队接入端口）、upstream（引擎真实端口）、out_dir（账本数据目录）。改 listen 后看门狗与切换工具会自动跟随该端口，无需另改端口，也不用给它们传参。lock_port 是反代进程自己的防重复端口，watchdog_lock_port 是看门狗自己的防重复端口，两者必须不同；一般都不用改，要改时显式填本字段。路径支持 @here（本配置文件所在目录）、@pkg（本工具包目录）、~（用户主目录）、相对路径、绝对路径，Windows/Linux/macOS 通用；纯相对路径按本配置文件所在目录解析，不随当前工作目录漂移。key_labels 填『API key 指纹 -> 姓名』，用 python collector_proxy.py --fp <你的key> 算出 8 位指纹；不要把真实 key 写进本文件。监控页自带在 http://<主机>:<listen端口>/monitor（显卡按卡的唯一身份绑定，槽位号只展示），数据接口 /ext.json、/health 始终可用；web_root 字段已弃用——本工具不再往任何外部页面注入脚本，留着不报错，可直接删。collector_script 留空即使用本包内的 collector_proxy.py。"
+}

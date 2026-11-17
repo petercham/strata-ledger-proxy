@@ -1,0 +1,10 @@
+# machine-local state — never commit (see README: config.json is generated
+# by `python bootstrap.py --init` from config.template.json, each box edits
+# its own listen / upstream / lock ports)
+config.json
+data/
+*.log
+relaunch-now.flag
+run-ledger-watchdog.bat
+__pycache__/
+*.pyc

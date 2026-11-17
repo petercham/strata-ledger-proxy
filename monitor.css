@@ -1,0 +1,223 @@
+/* Strata 账本工具 · 自持监控页样式（/monitor 专用）
+ *
+ * 视觉复刻官方 Strata 监视页的融合形态：设计令牌与 st-* 组件类按官方
+ * tokens.css / components.css / app.css 中监视页用到的部分逐条移植，本文件
+ * 由本包自己拥有——运行时不加载官方任何 CSS，不依赖官方页面 DOM。
+ * 字体退到系统栈（官方 Outfit woff2 属于官方资产，本包不拷贝）。
+ */
+
+:root{
+  /* type */
+  --st-font:system-ui,-apple-system,"Segoe UI",Roboto,"Microsoft YaHei",sans-serif;
+  --st-font-mono:ui-monospace,"SF Mono","Cascadia Code",Consolas,"Liberation Mono",monospace;
+  --st-fs-xs:12px;  --st-fs-sm:13px; --st-fs-md:14px; --st-fs-base:16px;
+  --st-fs-lg:18px;  --st-fs-xl:24px; --st-fs-stat:32px;
+  --st-fw-regular:400; --st-fw-medium:500; --st-fw-bold:700; --st-fw-black:900;
+  --st-lh-tight:1.1; --st-lh-body:1.55;
+
+  /* spacing (4pt) */
+  --st-s-1:4px; --st-s-2:8px; --st-s-3:12px; --st-s-4:16px; --st-s-5:20px;
+  --st-s-6:24px; --st-s-8:32px; --st-s-10:40px; --st-s-12:48px; --st-s-16:64px;
+
+  /* radius */
+  --st-r-sm:8px; --st-r-md:14px; --st-r-lg:20px; --st-r-xl:24px; --st-r-pill:9999px;
+
+  /* motion */
+  --st-ease:cubic-bezier(.2,.7,.2,1); --st-dur:160ms;
+
+  /* color — light */
+  --st-bg:#f9fafb;
+  --st-surface:#ffffff;
+  --st-surface-2:#f7f7f7;
+  --st-line:#dee5ee;
+  --st-line-soft:#eeeeee;
+  --st-ink:#221e1f;
+  --st-ink-soft:#303030;
+  --st-ink-muted:#6f6f6f;
+  --st-icon:#2F384C;
+
+  --st-accent:#10b981;
+  --st-accent-hover:#0c8a60;
+  --st-accent-ink:#ffffff;
+  --st-accent-tint:#ecfdf5;
+  --st-accent-text:#0c8a60;
+  --st-focus:#405de6;
+
+  --st-info:#0f97ff;     --st-info-tint:#e8f4ff;    --st-info-text:#0668c2;
+  --st-warn:#e39b0b;     --st-warn-tint:#fff6e0;    --st-warn-text:#8a5a00;
+  --st-danger:#e0283f;   --st-danger-tint:#fdecee;  --st-danger-text:#b01a2e;
+
+  --st-sh-card:0 18px 7px rgba(0,0,0,.01),0 10px 6px rgba(0,0,0,.02),0 4px 4px rgba(0,0,0,.03),0 1px 2px rgba(0,0,0,.04);
+  --st-sh-pop:0 10px 40px rgba(15,23,42,.08),0 1px 3px rgba(15,23,42,.06);
+  color-scheme:light;
+}
+
+/* color — dark */
+[data-theme="dark"]{
+  --st-bg:#0e1113;
+  --st-surface:#161a1d;
+  --st-surface-2:#1d2226;
+  --st-line:#2a3036;
+  --st-line-soft:#22272c;
+  --st-ink:#eef1f3;
+  --st-ink-soft:#c7cdd3;
+  --st-ink-muted:#8e979f;
+  --st-icon:#c7cdd3;
+
+  --st-accent:#34d399;
+  --st-accent-hover:#4ade80;
+  --st-accent-ink:#052e20;
+  --st-accent-tint:rgba(52,211,153,.12);
+  --st-accent-text:#4ade80;
+  --st-focus:#7b93ff;
+
+  --st-info:#3aa9ff;     --st-info-tint:rgba(58,169,255,.12);  --st-info-text:#7cc4ff;
+  --st-warn:#f5b53d;     --st-warn-tint:rgba(245,181,61,.12);  --st-warn-text:#f8c96a;
+  --st-danger:#ff5a6e;   --st-danger-tint:rgba(255,90,110,.12);--st-danger-text:#ff8a98;
+
+  --st-sh-card:0 1px 2px rgba(0,0,0,.4);
+  --st-sh-pop:0 16px 48px rgba(0,0,0,.55),0 1px 3px rgba(0,0,0,.4);
+  color-scheme:dark;
+}
+
+*,*::before,*::after{box-sizing:border-box}
+html,body{margin:0;background:var(--st-bg);color:var(--st-ink);font-family:var(--st-font);font-size:var(--st-fs-base);line-height:var(--st-lh-body);-webkit-font-smoothing:antialiased}
+:focus-visible{outline:2px solid var(--st-focus);outline-offset:2px}
+.muted{color:var(--st-ink-muted)}
+.small{font-size:var(--st-fs-xs)}
+.card-title{font-weight:var(--st-fw-bold);font-size:var(--st-fs-base);color:var(--st-ink)}
+
+/* icon */
+.st-icon{width:20px;height:20px;flex:none;color:inherit}
+.st-icon--sm{width:16px;height:16px}
+
+/* header */
+.mx-header{display:flex;align-items:center;gap:var(--st-s-4);min-height:60px;padding:10px var(--st-s-6);background:var(--st-surface);border-bottom:1px solid var(--st-line)}
+.mx-header__brand{font-weight:900;font-size:var(--st-fs-lg);letter-spacing:-.01em}
+.mx-header__spacer{flex:1}
+#mx-status{font-size:var(--st-fs-sm);color:var(--st-ink-muted);font-variant-numeric:tabular-nums}
+#mx-status.bad{color:var(--st-warn-text)}
+
+/* buttons + inputs (subset of official components.css) */
+.st-btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:42px;padding:0 18px;border-radius:var(--st-r-md);border:0;font:700 var(--st-fs-md)/1 var(--st-font);cursor:pointer;transition:background var(--st-dur),transform 120ms}
+.st-btn:active{transform:translateY(1px)}
+.st-btn--secondary{background:transparent;color:var(--st-ink);border:1.5px solid var(--st-line)}
+.st-btn--secondary:hover{background:var(--st-surface-2)}
+.st-btn--icon{width:36px;height:36px;padding:0;border-radius:10px;background:transparent;color:var(--st-ink-muted)}
+.st-btn--icon:hover{background:var(--st-surface-2);color:var(--st-ink)}
+.st-input{height:44px;padding:0 14px;border-radius:var(--st-r-md);border:1.5px solid var(--st-line);background:var(--st-surface);color:var(--st-ink);font:400 var(--st-fs-md) var(--st-font)}
+.st-input:focus{outline:0;border-color:var(--st-focus);box-shadow:0 0 0 3px color-mix(in srgb,var(--st-focus) 20%,transparent)}
+
+/* card + metric */
+.st-card{background:var(--st-surface);border:1px solid var(--st-line);border-radius:var(--st-r-lg);box-shadow:var(--st-sh-card);padding:var(--st-s-5)}
+.st-metric{display:flex;flex-direction:column;gap:10px}
+.st-metric__label{display:flex;align-items:center;gap:8px;font-size:var(--st-fs-sm);font-weight:500;color:var(--st-ink-muted)}
+/* 标题恒一行：超长省略号收尾，绝不折行把下方读数压低 */
+.mx-label-t{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+/* 大数字行恒占 32px（flex 项 min-height 生效），徽章/单位再高也不撑行——
+   所有卡的小字第一行起始高度因此对齐（锚=速度卡大数字行）。 */
+.st-metric__value{font-weight:900;font-size:var(--st-fs-stat);line-height:1;letter-spacing:-.01em;font-variant-numeric:tabular-nums;min-height:var(--st-fs-stat);white-space:nowrap}
+/* 徽章是行内块，默认按文字基线对齐会把行框撑高、把小字往下压——改为垂直居中钉进行内，行高不再被徽章撑大 */
+.st-metric__value .st-badge{vertical-align:middle}
+.st-metric__value small{font-size:var(--st-fs-md);font-weight:var(--st-fw-medium);color:var(--st-ink-muted);margin-left:4px}
+.st-metric__sub{font-size:var(--st-fs-xs);color:var(--st-ink-muted);font-variant-numeric:tabular-nums;line-height:1.35;min-height:calc(2 * 1.35em)}
+.mx-sw{display:inline-block;width:10px;height:3px;border-radius:1.5px;margin-right:4px;vertical-align:middle}
+.mx-sw--decode{background:var(--st-accent)}
+.mx-sw--prefill{background:color-mix(in srgb,var(--st-accent) 65%,black)}
+/* CPU 卡图例：单插槽=整机线（accent）；双插槽=左 CPU1（accent）右 CPU2（accent 加深），与 .speed-prefill 同色 */
+.mx-sw--cpu1{background:var(--st-info)}
+.mx-sw--cpu2{background:color-mix(in srgb,var(--st-info) 65%,black)}
+.st-metric__spark{display:block;width:100%;height:32px;overflow:visible;color:var(--st-accent)}
+.st-metric__spark .speed-prefill{color:color-mix(in srgb,currentColor 65%,black)}
+.st-metric__spark[data-tone="warn"]{color:var(--st-warn)}
+.st-metric__spark[data-tone="info"]{color:var(--st-info)}
+
+/* progress + gauge */
+.st-progress{height:8px;border-radius:var(--st-r-pill);background:var(--st-surface-2);border:1px solid var(--st-line-soft);overflow:hidden}
+.st-progress__bar{height:100%;border-radius:inherit;background:var(--st-accent);transition:width var(--st-dur) var(--st-ease)}
+.st-progress[data-tone="info"] .st-progress__bar{background:var(--st-info)}
+.st-progress[data-tone="warn"] .st-progress__bar{background:var(--st-warn)}
+.st-progress[data-tone="danger"] .st-progress__bar{background:var(--st-danger)}
+.st-gauge{position:relative;width:120px;height:120px}
+.st-gauge__track{stroke:var(--st-surface-2)} .st-gauge__fill{stroke:var(--st-accent)}
+
+/* table */
+.st-table{width:100%;border-collapse:collapse;font-size:var(--st-fs-md);font-variant-numeric:tabular-nums}
+.st-table th{text-align:left;font-weight:500;font-size:var(--st-fs-xs);letter-spacing:.04em;text-transform:uppercase;color:var(--st-ink-muted);padding:10px 12px;border-bottom:1px solid var(--st-line)}
+.st-table td{padding:12px;border-bottom:1px solid var(--st-line-soft);color:var(--st-ink-soft)}
+.st-table tr:hover td{background:var(--st-surface-2)}
+.st-table .num{text-align:right}
+
+/* badges */
+.st-badge{display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 10px;border-radius:var(--st-r-pill);font-size:var(--st-fs-xs);font-weight:700;background:var(--st-surface-2);color:var(--st-ink-muted);border:1px solid var(--st-line)}
+.st-badge::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+.st-badge--reading{background:var(--st-info-tint);color:var(--st-info-text);border-color:transparent}
+.st-badge--generating{background:var(--st-accent-tint);color:var(--st-accent-text);border-color:transparent}
+.st-badge--queued{background:var(--st-warn-tint);color:var(--st-warn-text);border-color:transparent}
+.st-badge--error{background:var(--st-danger-tint);color:var(--st-danger-text);border-color:transparent}
+/* PCIe card multi-series legend: one neutral row per series, no alert tones */
+.mx-legend{display:flex;flex-direction:column;gap:3px;margin-top:6px}
+.mx-legend__row{display:inline-flex;align-items:center;gap:6px;font-size:var(--st-fs-xs);color:var(--st-ink-muted)}
+.mx-legend__row i{width:10px;height:3px;border-radius:2px;flex:none}
+
+/* ---------------------------------------------------------------- monitor */
+.monitor{max-width:min(100%,1920px);width:100%;margin:0 auto;padding:var(--st-s-6);display:flex;flex-direction:column;gap:var(--st-s-4)}
+.state-card{display:flex;flex-direction:column;gap:var(--st-s-3)}
+.state-card__head{display:flex;align-items:center;gap:var(--st-s-4);flex-wrap:wrap}
+.state-card,.metric-card,.req-card,.ctx-card,.cc-card{min-width:0}
+.badges{display:flex;gap:var(--st-s-2);flex-wrap:wrap}
+.badges .st-badge{opacity:.38;transition:opacity var(--st-dur)}
+.badges .st-badge.on{opacity:1}
+.state-card__row{display:flex;justify-content:space-between;gap:var(--st-s-4);font-size:var(--st-fs-sm)}
+.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:var(--st-s-4)}
+.metric-card{padding:var(--st-s-4) var(--st-s-5)}
+.speed-values{display:flex;justify-content:space-between;gap:var(--st-s-3)}
+.speed-values > div{display:flex;flex-direction:column;gap:10px;min-width:0}
+.speed-values > div:last-child{text-align:right}
+.speed-values .st-metric__value{font-size:clamp(20px,2.2vw,var(--st-fs-stat))}
+.monitor-row{display:grid;grid-template-columns:minmax(min(260px,100%),1fr) minmax(0,2.4fr);gap:var(--st-s-4)}
+.ctx-card{display:flex;flex-direction:column;gap:var(--st-s-2)}
+.ctx-gauge{position:relative;width:150px;max-width:100%;aspect-ratio:1;height:auto;margin:var(--st-s-2) auto var(--st-s-3)}
+.ctx-gauge .st-gauge{width:100%;height:100%}
+.ctx-gauge .st-gauge__fill{transition:stroke-dasharray 400ms var(--st-ease)}
+.ctx-gauge__label{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center}
+.ctx-gauge__pct{font-weight:var(--st-fw-black);font-size:var(--st-fs-xl);line-height:1.1;font-variant-numeric:tabular-nums}
+.bar-row{display:flex;justify-content:space-between;font-size:var(--st-fs-sm);font-weight:var(--st-fw-medium)}
+.req-card{display:flex;flex-direction:column;gap:var(--st-s-3)}
+.table-wrap{overflow-x:auto}
+#req-wrap .st-table th,#req-wrap .st-table td{white-space:nowrap}
+.req-head{display:flex;align-items:center;justify-content:space-between;gap:var(--st-s-2)}
+.table-wrap.all{max-height:420px;overflow-y:auto}
+.req-totals{margin:0;font-size:var(--st-fs-sm)}
+.req-totals:empty{display:none}
+.cc-card{display:flex;flex-direction:column;gap:var(--st-s-3)}
+.cc-bars{display:grid;grid-template-columns:1fr 1fr;gap:var(--st-s-2) var(--st-s-6)}
+.cc-bars[hidden]{display:none}
+.cc-note{margin:0}
+.cc-note:empty{display:none}
+.facts{display:grid;grid-template-columns:minmax(140px,max-content) 1fr;gap:10px var(--st-s-6);margin:0;font-size:var(--st-fs-md)}
+.facts dt{color:var(--st-ink-muted)}
+.facts dd{margin:0;color:var(--st-ink-soft);font-variant-numeric:tabular-nums;display:flex;align-items:center;gap:6px}
+
+/* API key row (shown when /metrics answers 401/403 or no key is stored) */
+#apikey-row{display:flex;align-items:center;gap:var(--st-s-3);flex-wrap:wrap}
+#apikey-row[hidden]{display:none}
+#api-key{flex:1;min-width:220px}
+
+/* network total note inside the metrics grid */
+#mx-note{font-size:var(--st-fs-xs);color:var(--st-ink-muted);padding:2px 4px;grid-column:1 / -1}
+
+footer.mx-footer{color:var(--st-ink-muted);font-size:var(--st-fs-xs);margin:var(--st-s-6) auto var(--st-s-6);padding:0 var(--st-s-6);text-align:center;max-width:1920px}
+
+@media (max-width:1200px){
+  .metrics{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .cc-bars{grid-template-columns:1fr}
+}
+@media (max-width:760px){
+  .monitor{padding:var(--st-s-4)}
+  .monitor-row{grid-template-columns:minmax(0,1fr)}
+  .metrics{grid-template-columns:minmax(0,1fr)}
+}
+@media (prefers-reduced-motion:reduce){
+  *{transition:none!important;animation:none!important}
+}

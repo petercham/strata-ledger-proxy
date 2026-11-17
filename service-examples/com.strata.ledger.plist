@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.strata.ledger</string>
+  <key>ProgramArguments</key>
+  <array>
+    <!-- 改成实际 python3 与解压目录 -->
+    <string>/usr/bin/python3</string>
+    <string>/opt/strata-ledger-proxy/ledger_watchdog.py</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/opt/strata-ledger-proxy</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/opt/strata-ledger-proxy/data/launchd.log</string>
+  <key>StandardErrorPath</key>
+  <string>/opt/strata-ledger-proxy/data/launchd.log</string>
+</dict>
+</plist>

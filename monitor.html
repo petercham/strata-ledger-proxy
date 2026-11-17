@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="zh" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>机器监控 · Strata 账本工具</title>
+<!-- 账本工具自持页面：完整复刻官方 Strata 监视页的融合视图（模型状态卡 +
+     指标卡网格 + Context fill 环表 + Recent requests 表 + Conversation cache），
+     但页面、CSS、图标、数据请求、渲染全部由本包自有文件提供：
+     /monitor.css + /monitor.js + /monitor-sprite.svg，数据走同源 /ext.json
+     （本反代硬件采样）与 /metrics（反代原样转发引擎）。零注入，运行时不加载
+     官方页面任何资源，也不依赖官方 DOM。 -->
+<link rel="stylesheet" href="/monitor.css">
+</head>
+<body>
+<header class="mx-header">
+  <span class="mx-header__brand">机器监控</span>
+  <span id="mx-status">连接中…</span>
+  <span class="mx-header__spacer"></span>
+  <button class="st-btn st-btn--icon" id="theme-btn" aria-label="切换深浅色">
+    <svg class="st-icon" aria-hidden="true"><use id="theme-icon" href="/monitor-sprite.svg#i-moon"/></svg>
+  </button>
+</header>
+
+<div class="monitor">
+  <!-- 引擎访问：/metrics 需要 Bearer key。官方页把 key 存 localStorage["strata.apikey"]；
+       本页面读写同一个键（团队用官方页配过 key 后，本页直接免填）。 -->
+  <div class="st-card" id="apikey-row" hidden>
+    <label class="card-title" for="api-key">引擎 API key（访问 /metrics 用）</label>
+    <div id="apikey-row-inner" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+      <input class="st-input" id="api-key" type="password" autocomplete="off" placeholder="填入引擎访问 key 后自动保存">
+      <span class="muted small" id="apikey-note"></span>
+    </div>
+  </div>
+
+  <!-- ==================== 模型状态卡（数据：/metrics live） ==================== -->
+  <div class="st-card state-card">
+    <div class="state-card__head">
+      <span class="card-title">模型状态</span>
+      <span class="badges" id="state-badges">
+        <span class="st-badge" data-s="idle">空闲</span>
+        <span class="st-badge" data-s="unloaded">未加载</span>
+        <span class="st-badge st-badge--reading" data-s="reading">读取中</span>
+        <span class="st-badge st-badge--generating" data-s="generating">生成中</span>
+        <span class="st-badge st-badge--queued" data-s="queued">排队</span>
+        <span class="st-badge st-badge--error" data-s="error">错误</span>
+      </span>
+    </div>
+    <div class="state-card__row"><span id="state-label">等待请求</span><span class="muted" id="state-detail"></span></div>
+    <div class="st-progress" id="state-progress"><div class="st-progress__bar" id="state-bar" style="width:0%"></div></div>
+  </div>
+
+  <!-- ==================== 融合指标卡网格（Speed/Prefill 来自 /metrics；每 GPU /
+        RAM / 每硬盘 / 每网卡 来自 /ext.json；CPU 来自 /metrics） ==================== -->
+  <div class="metrics" id="metrics"><!-- filled by /monitor.js --></div>
+
+  <!-- ==================== Context fill + 引擎侧进度（/metrics + /ext.json） ==================== -->
+  <div class="monitor-row">
+    <div class="st-card ctx-card">
+      <span class="card-title">上下文占用</span>
+      <div class="ctx-gauge">
+        <svg class="st-gauge" viewBox="0 0 120 120" aria-hidden="true">
+          <circle class="st-gauge__track" cx="60" cy="60" r="50" fill="none" stroke-width="10" stroke-linecap="round"
+                  stroke-dasharray="235.6 314.2" transform="rotate(135 60 60)"/>
+          <circle class="st-gauge__fill" id="ctx-fill" cx="60" cy="60" r="50" fill="none" stroke-width="10"
+                  stroke-linecap="round" stroke-dasharray="0 314.2" transform="rotate(135 60 60)"/>
+        </svg>
+        <div class="ctx-gauge__label"><span class="ctx-gauge__pct" id="ctx-pct">0%</span><span class="muted" id="ctx-sub">&ndash;</span></div>
+      </div>
+      <div class="bar-row"><span>显存中的专家层</span><span class="muted" id="slots-text">&ndash;</span></div>
+      <div class="st-progress"><div class="st-progress__bar" id="slots-bar" style="width:0%"></div></div>
+      <div class="bar-row"><span>系统内存</span><span class="muted" id="ram-text">&ndash;</span></div>
+      <div class="st-progress" id="ram-progress"><div class="st-progress__bar" id="ram-bar" style="width:0%"></div></div>
+      <div class="bar-row"><span>显卡温度</span><span class="muted" id="temp-text">&ndash;</span></div>
+      <div class="st-progress" data-tone="warn"><div class="st-progress__bar" id="temp-bar" style="width:0%"></div></div>
+    </div>
+
+    <!-- ==================== Recent requests（/metrics requests + totals） ==================== -->
+    <div class="st-card req-card">
+      <div class="req-head"><span class="card-title">最近请求</span>
+        <button class="st-btn st-btn--secondary" id="req-all" hidden>显示全部</button></div>
+      <div class="table-wrap" id="req-wrap">
+        <table class="st-table">
+          <thead><tr><th>时间</th><th>状态</th><th class="num">输入</th><th class="num">复用</th><th class="num">输出</th>
+            <th class="num" title="新输入 token 每秒（不含复用缓存 token；按引擎 prompt 耗时）">预填充 t/s</th><th class="num">解码 t/s</th><th class="num" title="写回答期间：命中的已驻留显存专家占比（经 PCIe 读取的不计入，其后附 +N% PCIe）">显存命中率</th><th class="num">耗时</th></tr></thead>
+          <tbody id="req-body"><tr><td colspan="9" class="muted">还没有请求</td></tr></tbody>
+        </table>
+      </div>
+      <p class="muted req-totals" id="req-totals"></p>
+    </div>
+  </div>
+
+  <!-- ==================== Conversation cache（/metrics conversation_cache） ==================== -->
+  <div class="st-card cc-card" id="cc-card" hidden>
+    <div class="req-head"><span class="card-title">对话缓存</span><span class="muted small" id="cc-sum"></span></div>
+    <div class="cc-bars" id="cc-bars" hidden>
+      <div><div class="bar-row"><span>驻留对话数</span><span class="muted" id="cc-slots-text">&ndash;</span></div>
+        <div class="st-progress"><div class="st-progress__bar" id="cc-slots-bar" style="width:0%"></div></div></div>
+      <div><div class="bar-row"><span>驻留内存（RAM）</span><span class="muted" id="cc-mem-text">&ndash;</span></div>
+        <div class="st-progress"><div class="st-progress__bar" id="cc-mem-bar" style="width:0%"></div></div></div>
+    </div>
+    <dl class="facts" id="cc-facts"></dl>
+    <p class="muted small cc-note" id="cc-note"></p>
+  </div>
+</div>
+
+<footer class="mx-footer">本页为 Strata 账本工具自持页面（/monitor）· 样式与图标由本包自有文件提供 · 数据每秒刷新 · 不加载其他网站资源</footer>
+<script src="/monitor.js" defer></script>
+</body>
+</html>
