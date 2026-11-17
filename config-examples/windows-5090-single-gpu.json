@@ -1,0 +1,17 @@
+{
+  "name": "strata-ledger-proxy",
+  "mode": "proxy",
+  "out_dir": "@here/data",
+  "web_root": "",
+  "listen": ":::8080",
+  "upstream": "http://127.0.0.1:8787",
+  "lock_port": 43180,
+  "watchdog_lock_port": 43179,
+  "report_hour": 0,
+  "report_minute": 0,
+  "force_include_usage": true,
+  "watchdog_interval_s": 5,
+  "watchdog_relaunch_cooldown_s": 5,
+  "key_labels": {},
+  "comment": "样例：Windows 单卡终端（ RTX 5090 级），2026-11-17 在岗实测形态直接拷出，仅去 key_labels。要点：listen 写 :::8080（IPv6 双栈门面，IPv4 同口可入；引擎只绑环回，团队流量全走本门面）；upstream 指引擎的环回端口，与 listen 门面分离——引擎退到 127.0.0.1 后局域网只暴露反代这一个口。lock 两值（43180/43179）是该机为避开旧账本链在用的端口而改的示例——换机先 netstat 查占用再选，两个值必须互不相同。改 listen 后看门狗与切换工具自动跟随，无需传参。key_labels 用 python collector_proxy.py --fp <key> 实算指纹后填，本样例留空。"
+}

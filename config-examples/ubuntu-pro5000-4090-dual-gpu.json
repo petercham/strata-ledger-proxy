@@ -1,0 +1,17 @@
+{
+  "name": "strata-ledger-proxy",
+  "mode": "proxy",
+  "out_dir": "@here/data",
+  "web_root": "",
+  "listen": "0.0.0.0:8080",
+  "upstream": "http://127.0.0.1:8787",
+  "lock_port": 43177,
+  "watchdog_lock_port": 43176,
+  "report_hour": 0,
+  "report_minute": 0,
+  "force_include_usage": true,
+  "watchdog_interval_s": 5,
+  "watchdog_relaunch_cooldown_s": 5,
+  "key_labels": {},
+  "comment": "样例：Linux（Ubuntu 系）双卡工作站（RTX PRO 5000 72G + RTX 4090 24G 级别）的装配参考，按模板缺省口径组装，非某台实机的在岗抄录。要点：双卡无需任何配置项——监控页按显卡 UUID 自动发现、逐卡绑定，槽位号只做展示；缺 nvidia-smi / psutil 时监控自动降级、记账不受影响（装进 venv 即恢复全量）。生产用 systemd 自启件（service-examples/strata-ledger.service），不要用 start.sh 前台跑。upstream/lock 数值按你机实际改。key_labels 用 python collector_proxy.py --fp <key> 实算指纹后填，本样例留空。"
+}

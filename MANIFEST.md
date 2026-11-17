@@ -1,6 +1,6 @@
 # 清单与来源登记
 
-发行版本：`strata-ledger-proxy` 2026-11-09（本次修订 2026-11-16 · 监视页五稿收口：PCIe 卡单卡化 + selftest 对齐，ZIP 重打 29 文件）
+发行版本：`strata-ledger-proxy` 2026-11-09（本次修订 2026-11-17 · rev8 后补：`config-examples/` 两份脱敏真机样例 + README 第十一节真机实测登记；git 仓形态，无 ZIP）
 用途：给另一台机器（代号 5090）替换旧的「旁路边读引擎日志」账本链的**独立工具包**。
 运行要求：本机 Python 3.13 实测通过；3.8 未实测，静态检查未见 3.9+ 专有语法（内置泛型下标 `list[...]`、`X | Y` 联合类型、match 语句等均未使用）。主链仅标准库；`psutil` 与 `nvidia-smi` 为监控增强，缺失时自动降级。目标机若用更旧版本，请先跑 `bootstrap.py --selftest` 验证。
 
@@ -8,7 +8,7 @@
 
 ## 一、文件清单
 
-本发行版共 **29 个文件**（根目录 23 个 + `service-examples/` 3 个 + `legacy/` 3 个；下表把服务示例与兼容件各归并成一行通配登记）。逐项来源见下表，压缩包条目以当次实际打包为准，不在此写死随版本变化的计数。
+本发行版共 **31 个文件**（根目录 23 个 + `service-examples/` 3 个 + `legacy/` 3 个 + `config-examples/` 2 个；下表把服务示例与兼容件各归并成一行通配登记）。逐项来源见下表，仓内条目以当次实际提交为准，不在此写死随版本变化的计数。
 
 | 文件 | 作用 | 来源 |
 |---|---|---|
@@ -36,6 +36,8 @@
 | `start.bat` | Windows 启动（GBK + CRLF） | 本包新写 |
 | `start.sh` | Linux / macOS 启动（LF） | 本包新写 |
 | `service-examples/*` | 登录自启 / systemd / launchd 示例 | 本包新写 |
+| `config-examples/windows-5090-single-gpu.json` | Windows 单卡终端在岗配置样例（IPv6 双栈门面 + 引擎退环回 + lock 避让改值示范） | 000 在岗实机抄录，去 `key_labels`，2026-11-17 |
+| `config-examples/ubuntu-pro5000-4090-dual-gpu.json` | Linux 双卡工作站装配参考样例（双卡零配置示范，comment 内嵌降级与 systemd 口径） | 按模板缺省口径组装（非实机抄录），2026-11-17 |
 | `legacy/collector_log.py` | 旧读日志采集器（可选兼容件） | 母本副本，未改 |
 | `legacy/scheduler.py` | 旧定时排程（可选兼容件） | 母本副本，未改 |
 | `legacy/README.md` | 兼容件说明 | 本包新写 |
@@ -247,6 +249,22 @@
 **追加（磁盘/网卡卡重构 + CPU 卡图例 + 小字基线对齐，断言对表 + 再重打）**：主理人同批四路前端热修（monitor.js + monitor.css，均已落生产+母本、cmp 字节级一致）：①**磁盘卡重构**——标题 `#编号 盘符 型号 · 容量`（`const head = [\`#${d.number + 1}\`]`，内部 0 基、显示从 #1 起），大数字 = 数值 + `<small>` 单位 + 总线规格徽章（`d.bus` 去 `Disk N · ` 前缀），读/写移入小字两行（绿/橙短线）；②**网卡卡**——无线标题「无线网卡」且**不出徽章**、有线标题 = 适配器真名 + 「有线」徽章（中途方案 `NET_KIND_LABEL`/WLAN 徽章已废，断言反向锁死其永不复活），下/上行小字两行；③**CPU 卡图例**——多插槽小字左右 `swc("mx-sw--cpu1"/"mx-sw--cpu2")` + `subOf()`，单插槽小字 `swc("mx-sw--cpu1")` + 核/线程或「整机」兜底（旧 `setSub(id + "-s", st.threads…)` 作废），css 新增 `.mx-sw--cpu1/--cpu2`（info 主题变量），`.st-metric__spark .speed-prefill` 由写死 accent 改 `currentColor 65%` 使右线恒与所在卡主线同色加深；④**小字基线对齐骨架**——`cardHtml` 标题文本包 `<span class="mx-label-t">`（恒一行+省略号），css `.st-metric__value` 加 `min-height:var(--st-fs-stat);white-space:nowrap`（大数字行定高，徽章不撑行）；⑤**GPU 卡序号前置（rev7c）**——标题 = `<span class="muted" title="槽位号会漂，仅供对照，不作为身份">#index+1</span> 卡名`（与磁盘同款、从 1 起），旧 0 基 `${esc(g.index)}` 形态转反例守卫。追加 CSS 微调（rev7b，用户定位小字被压低的真凶=大数字后 `.st-badge` 行内块按基线对齐撑高行框）：中途做过 `.st-metric__value` 加 `inline-flex` 的方案，因间距副作用**已撤销**——终态只新增 `.st-metric__value .st-badge{vertical-align:middle}`，`.st-metric__value` 规则行保持原串+`min-height`+`white-space:nowrap`。断言对表：作废旧「&nbsp; 大数字」两条与 `NET_KIND_LABEL`/`cardHtml … esc(a.name)`/单插槽 `setSub` 旧锁，新锁 disk rev6（`#${d.number + 1}`、spec 徽章、&nbsp; 反例守卫）、net rev6b（无线标题/有线徽章串逐字节、`NET_KIND_LABEL`+`WLAN` 缺席守卫）、cpu 图例（三形态串 + `setSub` 旧行缺席守卫）、图例配色三条 CSS、骨架两条（label 包装行 + `mx-label-t`/`min-height` CSS + `.st-metric__value .st-badge{vertical-align:middle}` 在位与 `display:inline-flex;align-items:center;gap:0` 反例守卫）、gpu 标题 rev7c（muted `#${esc(g.index + 1)}` 前置整串逐字节 + 旧 0 基 `${esc(g.index)}` 缺席守卫）。node 冒烟 stub 的 disks 行含 `number/model/bus/drives/size`、net 行含 `name/kind/down_mb/up_mb`，两卡渲染真跑不抛。当次 **50/50** 全绿；ZIP 再覆盖重打，仍 **29 文件**口径。另：CHANGELOG 顶部补写 **monitor-rev6** 条目收拢本批叙事（含 ReferenceError 事故）。
 
 **重打包**：`strata-ledger-proxy-2026-11-16.zip` 覆盖旧 27 文件版，按包内实际全量重打（根 23 + `service-examples/` 3 + `legacy/` 3 = **29 文件**，`__pycache__` 不入包），打包后以 `zipfile.namelist()` 核对数量。未启动 / 停止 / 重启任何生产进程；8080 未动。
+
+---
+
+### 2.12 rev8 后补：`config-examples/` 样例 + README 真机实测登记（2026-11-17 · 纯文档/样例，功能代码零改动）
+
+背景：两台机器（000 · Windows 5090 单卡、002 · Linux PRO 5000 + 4090 双卡）跑过之后，皮总问「这两台的样例/经验能不能进仓」。判定＝**硬件型号不是本包配置项**（监控按 UUID 动态逐卡发现，配置里没有也无需有机型字段），所以机型不进 `config.json`；可进仓的是两样：①结构示范（脱敏实例配置），②与本包功能相关的实测结论（免得下一台机器重踩）。真实拓扑、真实 IPv6、key 指纹、成员姓名一律不进。
+
+| 文件 | 改动 | 为什么 |
+|---|---|---|
+| `config-examples/windows-5090-single-gpu.json`（新增） | 000 在岗 `config.json` 实机抄录，仅 `key_labels` 清空；comment 改写为示范口径（IPv6 双栈门面、引擎退环回、lock 避让改值） | 在岗跑通的形态比模板抽象描述更有说服力；直接示范 rev8 双栈写法 |
+| `config-examples/ubuntu-pro5000-4090-dual-gpu.json`（新增） | 按模板缺省口径组装的 Linux 双卡装配参考（**非实机抄录**，comment 内如实注明）；示范双卡零配置、缺依赖降级、systemd 口径 | 双卡异构组合最容易让人以为要配显卡——样例的 comment 就是把这层口径随身带上 |
+| `README.md` | 第二节第 3 步末尾加「两份真机形态样例」导读表；**新增第十一节「真机实测登记」**（6 条：双栈类属性修与换脑定式 / Win11 注册表 `~MHz` 废源与 PDH 正确源 / 消费卡 ASPM Gen1↔Gen5 链路本态 / 双卡 UUID 自动发现与 `ext.js` 串卡退役 / 缺依赖降级与「装进服务实际用的解释器」/ 登录环境无交互 PATH→自启件绝对解释器路径）。章节编号追加在末尾，既有「第 N 节第 M 条」交叉引用不受影响 | 实测结论不登记，下一台机器就会重踩；登记限定在与本包功能相关的范围 |
+| `MANIFEST.md` | 修订口径更新；第一节文件数 29→**31**（新增 `config-examples/` 2 个）并补两行通配登记；本节新增 | 登记 |
+| `CHANGELOG.md` | 新增 rev8 后补条目 | 登记 |
+
+**脱敏实证**：两份样例全包扫描——真实 IPv6 地址 0 命中（000 在岗文件里的 `listen` 是 `:::8080` 通配写法，本就不含地址字面量）、真实指纹与真人姓名 0 命中、机器代号（000/002）不出现在样例正文（只按「Windows 单卡终端 / Linux 双卡工作站」中性描述），git 提交信息同口径。
 
 ---
 ## 三、如实登记：代码分叉
