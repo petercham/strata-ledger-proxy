@@ -1,6 +1,6 @@
 # 清单与来源登记
 
-发行版本：`strata-ledger-proxy` 2026-11-09（本次修订 2026-11-17 · rev8 后补：`config-examples/` 两份脱敏真机样例 + README 第十一节「真机踩坑登记」（症状式 10 条）；git 仓形态，无 ZIP）
+发行版本：`strata-ledger-proxy` 2026-11-09（本次修订 2026-11-17 · rev9：CPU 卡标题带型号；另含 rev8 后补的 `config-examples/` 样例、README 踩坑登记与真机截屏配图；git 仓形态，无 ZIP）
 用途：给另一台机器（代号 5090）替换旧的「旁路边读引擎日志」账本链的**独立工具包**。
 运行要求：本机 Python 3.13 实测通过；3.8 未实测，静态检查未见 3.9+ 专有语法（内置泛型下标 `list[...]`、`X | Y` 联合类型、match 语句等均未使用）。主链仅标准库；`psutil` 与 `nvidia-smi` 为监控增强，缺失时自动降级。目标机若用更旧版本，请先跑 `bootstrap.py --selftest` 验证。
 
@@ -307,6 +307,18 @@
 | `README.md` | 卖点区后插入两张图＋两句图注（真机实拍口径、深浅主题与 UUID 绑卡口径）；账本图配一句「82% 输入 token 复用 ↔ 解码稳 110+ tok/s」的解读 | 图要带读法，不然访客不知道看什么 |
 
 **脱敏实证（截图前目检＋入仓前复检）**：两图无 8 位指纹（该机无 key 模式，请求表本就无身份列）、无姓名、无 key、无 IPv6/内网地址；画面内出现的均为硬件型号与运行时读数（盘型号、5090、温度、tok/s）。截图为浅色主题（README 静态图无主题跟随，图注注明）。原始全页截图留存于本机 `D:\Strata\.workbuddy\shots\`，不入库。
+
+---
+
+### 2.16 rev9：CPU 卡标题带型号（2026-11-17 · 功能改动 · 三套全绿）
+
+| 文件 | 改动 | 为什么 |
+|---|---|---|
+| `monitor_ext.py` | 新增模块函数 `cpu_name()`（注册表 `ProcessorNameString` / `/proc/cpuinfo` model name，纯标准库）；`Sampler` 新增 `_cpu_name` 一次读取缓存；`_sample()` 在 `cpu_mhz` 块**之外**（两平台通用）出 `out["cpu_name"]`；失败/空 → 字段缺席 | 皮总要求 CPU 卡标题带型号；与任务管理器显示同源；缺 psutil 时整组扩展数据降级属既有边界 |
+| `monitor.js` | `renderCpu` 顶部构 `cpuLabel`（`CPU · esc(cpu_name)`，无字段保持 `CPU`）+ `setCpuTitle`（查 `.mx-label-t` 幂等刷新）；两分支 `ensure(...)` 外包 `setCpuTitle(...)` | ensure 只在首建写标题，ext.json 晚到需补写；esc 走转义链（型号名可含任意字符） |
+| `selftest_monitor.py` | 冒烟 stub ext 喂 `cpu_name: "Smoke CPU Model <x>"` + `cpu_mhz`；新增两条断言（标题两分支逐字节＋幂等刷新在位＋裸标题 `cardHtml(id, "cpu", "CPU",` 永不复活反例守卫；采样端四源锁）；当次 **52/52** | 锁终态＋防旧形态回魂 |
+
+**在岗换脑实况（如实登记）**：三文件已同步在岗位（cmp 字节级一致）；`switch_proxy.py` 当轮读到 2 条 ESTABLISHED idle 连接 → **硬拒绝未 force**，换脑待静默窗口。在岗 ext 读数当前无 `cpu_name`（旧进程未换脑），换脑后自动出现。
 
 ---
 ## 三、如实登记：代码分叉

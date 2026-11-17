@@ -292,10 +292,17 @@
     const st = (m && m.hardware_static) || {};
     const seen = new Set();
     const socks = Array.isArray(hw.cpu_sockets) && hw.cpu_sockets.length > 1 ? hw.cpu_sockets : null;
+    // 标题 = CPU · 型号（/ext.json cpu_name，静态读一次；采不到就保持光 "CPU"，不编名字）。
+    // ensure 只在卡片首建时写标题，ext.json 可能晚于 /metrics 到——label 节点每拍幂等刷新。
+    const cpuLabel = "CPU" + (ext && ext.cpu_name ? ` · ${esc(ext.cpu_name)}` : "");
+    const setCpuTitle = (el) => {
+      const lt = el && el.querySelector ? el.querySelector(".mx-label-t") : null;
+      if (lt && lt.innerHTML !== cpuLabel) lt.innerHTML = cpuLabel;
+    };
     if (socks) {
       const id = "card-cpu";
       seen.add(id);
-      ensure(host, id, cardHtml(id, "cpu", "CPU", { icon: "cpu", tone: "info", speed: true }));
+      setCpuTitle(ensure(host, id, cardHtml(id, "cpu", cpuLabel, { icon: "cpu", tone: "info", speed: true })));
       const n = socks.length - 1;
       const v1 = $(id + "-v"), v2 = $(id + "-pv");
       if (v1) v1.innerHTML = `${fmt(socks[0])}<small>%</small>`;
@@ -322,7 +329,7 @@
     } else if (hw.cpu != null) {
       const id = "card-cpu";
       seen.add(id);
-      ensure(host, id, cardHtml(id, "cpu", "CPU", { icon: "cpu", tone: "info" }));
+      setCpuTitle(ensure(host, id, cardHtml(id, "cpu", cpuLabel, { icon: "cpu", tone: "info" })));
       const v = $(id + "-v");
       // 大数字后跟实时主频（/ext.json cpu_mhz＝PDH % Processor Performance × 基准频率，
       // 与任务管理器"速度"同源；注册表 ~MHz 在 Win11 钉死基准，已废，2026-11-17）

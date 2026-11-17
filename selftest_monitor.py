@@ -166,6 +166,7 @@ global.fetch = async (url, opts) => {
         pcie_gen: 5, pcie_width: 8, pcie_gen_max: 5, pcie_width_max: 16,
         pcie_rx_mb: 10, pcie_tx_mb: 1 }],
       pcie_txrx_supported: true,
+      cpu_name: "Smoke CPU Model <x>", cpu_mhz: 5000,
       ram: { used: 8e9, total: 32e9 }, swap: { used: 0, total: 0 },
       disks: [{ number: 0, read_mb: 1, write_mb: 2, model: "X", bus: "NVMe", size: 1e12, drives: "c:" }],
       net: [{ name: "Ethernet", kind: "wired", connected: true, down_mb: 3, up_mb: 1 }],
@@ -436,6 +437,23 @@ def main():
         # multi-socket branch present and bucketed per socket
         and b"Array.isArray(hw.cpu_sockets) && hw.cpu_sockets.length > 1" in js[0]
         and b"hist.cpuSock" in js[0])
+    rec("cpu card title carries static model (ext.cpu_name, both branches) + idempotent "
+        "late-ext label refresh; absent field keeps plain 'CPU', never invents a name "
+        "(2026-11-17)",
+        js is not None
+        and 'const cpuLabel = "CPU" + (ext && ext.cpu_name ? ` · ${esc(ext.cpu_name)}` : "");'.encode("utf-8") in js[0]
+        and b'setCpuTitle(ensure(host, id, cardHtml(id, "cpu", cpuLabel, { icon: "cpu", tone: "info", speed: true })))' in js[0]
+        and b'setCpuTitle(ensure(host, id, cardHtml(id, "cpu", cpuLabel, { icon: "cpu", tone: "info" })))' in js[0]
+        and b'lt.innerHTML !== cpuLabel) lt.innerHTML = cpuLabel;' in js[0]
+        # bare-title old form must never come back for the cpu card
+        and b'cardHtml(id, "cpu", "CPU",' not in js[0])
+    rec("cpu_name sampler: stdlib registry (nt) / /proc/cpuinfo (posix), whitespace-collapsed, "
+        "64-char cap, empty on any failure -> field omitted",
+        getattr(m, "cpu_name", None) is not None
+        and b"ProcessorNameString" in open(os.path.join(HERE, "monitor_ext.py"), "rb").read()
+        and b'"/proc/cpuinfo"' in open(os.path.join(HERE, "monitor_ext.py"), "rb").read()
+        and b'name = " ".join(name.split())' in open(os.path.join(HERE, "monitor_ext.py"), "rb").read()
+        and b'return name[:64]' in open(os.path.join(HERE, "monitor_ext.py"), "rb").read())
     rec("cpu legend baseline (host hotfix rev7): multi-socket subs led by cpu1/cpu2 "
         "swatch glyphs + subOf(); single-socket sub gets cpu1 glyph + cores/threads or "
         "\u6574\u673a fallback (old setSub threads line gone)",

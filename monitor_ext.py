@@ -145,6 +145,33 @@ class PdhClock:
         return self._base_mhz * v.value / 100.0
 
 
+def cpu_name() -> str:
+    r"""Static CPU model string for the monitor CPU card title (2026-11-17).
+
+    Windows: registry ProcessorNameString (the same source Task Manager shows);
+    Linux: first 'model name' line in /proc/cpuinfo. Stdlib only, read once and
+    cached by the sampler. Any failure -> "" and the frontend keeps the plain
+    'CPU' title -- never invents a name.
+    """
+    name = ""
+    try:
+        if os.name == "nt":
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                                r"HARDWARE\DESCRIPTION\System\CentralProcessor\0") as k:
+                name = str(winreg.QueryValueEx(k, "ProcessorNameString")[0])
+        else:
+            with open("/proc/cpuinfo", "r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    if line.lower().startswith("model name"):
+                        name = line.split(":", 1)[1].strip()
+                        break
+    except Exception:
+        return ""
+    name = " ".join(name.split())  # OEM strings carry padding spaces
+    return name[:64]
+
+
 def net_kind(name: str):
     low = name.lower()
     if any(s in low for s in ("wi-fi", "wifi", "wlan", "wireless", "无线")):
@@ -358,6 +385,7 @@ class Sampler(threading.Thread):
         self._txrx = {}
         self._inv, self._letter_map = [], {}
         self._clock = None                        # PdhClock instance, False = unusable
+        self._cpu_name = None                     # static CPU model, read once
 
     def snapshot(self) -> dict:
         with self.lock:
@@ -410,6 +438,12 @@ class Sampler(threading.Thread):
                     mhz = self._clock.sample()
                     if mhz:
                         out["cpu_mhz"] = mhz
+
+            # Static CPU model for the card title (both platforms; "" -> omitted)
+            if self._cpu_name is None:
+                self._cpu_name = cpu_name()
+            if self._cpu_name:
+                out["cpu_name"] = self._cpu_name
 
             dt = (now - self._prev_at) if self._prev_at and now > self._prev_at else 0.0
             try:
