@@ -73,17 +73,19 @@ try:
     import monitor_ext as _monitor_ext
 except Exception:
     _monitor_ext = None
+from paths import expand_path        # rev11a A-2: strata_config path flattening
+                                     # (@here / relative against config_dir);
+                                     # paths.py is already a hard runtime
+                                     # dependency (load_config below).
 
 CANON_INT = ("prompt", "cached", "new_prompt", "gen")
 BODY_ACCUM_CAP = 32 * 1024 * 1024        # stop keeping the private copy past 32 MiB; relay is unaffected
 GATE_DEFAULTS = (0, 10.0, 600.0)         # (max_inflight, queue_beat_s, gate_wait_s); 0 = gate off
-FOLLOW_DEFAULTS = (False, 5.0)           # (gate_follow, gate_follow_poll_s); false = follow off, fixed-value gate
-# Engine-reading cache, rev11 gate-follow. Discipline (do not regress):
-#   unique writer = the F-4 "gate-follow" daemon thread (_follow_loop);
-#   a write = rebind the whole tuple (GIL-atomic), elements are NEVER mutated in place;
-#   readers (F-5 _gate_params) only dereference, never take a lock;
-#   None = never successfully read yet (fallback chain starts at max_inflight).
-_engine_reading = None                   # (limit:int, at:monotonic:float) | None
+# rev11a X-2: FOLLOW_DEFAULTS deleted — the follow default (False) is carried by
+# `c.get("gate_follow") is True` in _gate_params; the poll-seconds key's consumer
+# (the polling thread) is torn out by X-1, so the constant would be dead code.
+# The engine-runtime reading cache is retired by rev11a (INTK-0003: the gateway
+# only caps the upper bound; it never follows engine runtime values).
 _HOP_HEADERS = {
     "host", "content-length", "transfer-encoding", "connection", "keep-alive",
     "upgrade", "trailer", "te", "proxy-authenticate", "proxy-authorization",
@@ -246,83 +248,65 @@ def _push_gate(gate):
             pass
 
 
-def _engine_status_fetch(cfg):
-    """One bypass GET: {upstream}/v1/status -> concurrency.serving as int, else None.
+def _strata_parallel_parse(path):
+    """rev11a A-1: pure parse helper for the Strata startup-config file.
 
-    Success requires ALL of: HTTP 200, parseable JSON, concurrency.serving present
-    and int(...) >= 1. Anything else (HTTPError, timeout, connection error, bad
-    JSON, missing field, value < 1 or non-int) returns None — this function never
-    raises. It is the ONLY new urlreq call site of rev11 gate-follow:
-    a background-thread bypass GET, never through the gate, never in the ledger.
+    Called ONLY when the mtime/size guard below goes stale (0-1 times per
+    request, 0 in the steady state). Returns the effective gate limit for the
+    follow mode, or None when the file cannot be read/parsed at all.
+
+    Field semantics mirror the engine source of truth (serve/server.py:3588-3602
+    read-only reference): a top-level "parallel" that is an int (not bool) and
+    >= 1 is returned as-is — NO PARALLEL_MAX clamping here (clamping is the
+    engine's business, ticket A-4). False/None/absent/1/bool/non-int/negative
+    all mean the engine runs single-shot, so the gate caps at 1. Any file or
+    JSON failure returns None (never raises); the caller falls back to static.
+    Zero urlreq, zero threads.
     """
     try:
-        req = urlreq.Request(cfg["upstream"].rstrip("/") + "/v1/status", method="GET")
-        key_env = cfg.get("upstream_key_env")
-        if key_env:
-            key = os.environ.get(key_env, "")
-            if key:
-                req.add_header("Authorization", f"Bearer {key}")
-        with urlreq.urlopen(req, timeout=5.0) as resp:
-            if resp.status != 200:
-                return None
-            obj = json.loads(resp.read())
-        serving = int((obj.get("concurrency") or {}).get("serving"))
-        return serving if serving >= 1 else None
+        with open(path, encoding="utf-8") as f:
+            obj = json.load(f)
+        p = obj.get("parallel") if isinstance(obj, dict) else None
+        if isinstance(p, int) and not isinstance(p, bool) and p >= 1:
+            return p
+        return 1
     except Exception:
         return None
 
 
-def _follow_loop(cfg_path):
-    """rev11 gate-follow daemon: poll the engine's runtime concurrency and cache it.
+_strata_parallel_cache = None   # 模块级：(path:str, guard:(mtime_ns,size), limit:int) | None
+                                # 无锁纪律：写＝整体重绑元组（GIL 原子）；多请求线程并发
+                                # miss 时允许重复解析（幂等读数，last-write-wins，无撕裂
+                                # 读、无正确性问题）——引新锁即违红线四。
 
-    The gate's effective limit then FOLLOWS the engine's actual serving parallelism
-    (including fit_parallel VRAM downgrades and engine-side --batch self-tuning);
-    nobody has to fill the same number in two places. Config is re-read every
-    cycle, so toggling gate_follow needs no restart (same re-read discipline as
-    the rev10 per-request gate params).
-    """
-    global _engine_reading          # D1 fix (QA probe A): without this line, writes to
-                                    # _engine_reading inside the function body are judged
-                                    # local by Python -> read-before-write UnboundLocalError
-                                    # -> swallowed by this loop's own except -> follow
-                                    # silently fails. Lesson registered here; copy verbatim.
-    while True:
-        poll_s = FOLLOW_DEFAULTS[1]     # D2 fix (QA probe B; "default binding outside
-                                        # the try" form, fixed): the sleep argument is
-                                        # bound every turn BEFORE the try, so a first-
-                                        # pass load_config blow-up cannot NameError.
-        runlog = None                   # same off-try default binding discipline: the
-                                        # except path must never hit an unbound name
-        try:
-            c = load_config(cfg_path)
-            runlog = os.path.join(c.get("out_dir", ""), "ledger-service.log")
-            follow = c.get("gate_follow") is True
-            try:
-                poll_s = float(c.get("gate_follow_poll_s", FOLLOW_DEFAULTS[1]))
-            except (TypeError, ValueError):
-                poll_s = FOLLOW_DEFAULTS[1]          # bad value -> default
-            if poll_s < 0.5:
-                poll_s = 0.5                         # clamp floor (small test values stay legal)
-            if follow:
-                v = _engine_status_fetch(c)
-                if v is not None:
-                    if _engine_reading is None or _engine_reading[0] != v:   # log on change only, best-effort
-                        _append_line(runlog,
-                                     f"[{datetime.now():%Y-%m-%d %H:%M:%S}] gate follow: "
-                                     f"limit {_engine_reading[0] if _engine_reading else None} -> {v} "
-                                     "(engine /v1/status serving)")
-                    _engine_reading = (v, time.monotonic())      # the ONLY write site (global declared above)
-                # read failure: _engine_reading untouched = last good value stays valid
-                # indefinitely (fallback chain level 1).
-            # follow false: zero upstream requests, just re-read config next cycle
-            # (toggling the switch needs no restart, same re-read discipline as rev10).
-        except Exception:
-            if runlog:
-                _append_line(runlog, f"[{datetime.now():%Y-%m-%d %H:%M:%S}] "
-                                     f"gate follow loop ERROR: {traceback.format_exc()}")
-            # swallowed by design: the thread never dies; sleep(poll_s) below is safe
-            # because poll_s is always bound (off-try default above).
-        time.sleep(poll_s)
+def _strata_parallel_limit(c):
+    global _strata_parallel_cache   # ← 必须（rev11a B-1 修·rev11 D1 同族坑第二次）：
+                                    # 函数体内对 _strata_parallel_cache 的任何赋值使 Python
+                                    # 把该名全程判为局部——缺这行则读点 cache = ... 先于
+                                    # 赋值执行＝UnboundLocalError，且本函数炸点穿
+                                    # _gate_params 穿 do_POST（实码 673 行无外层 try）
+                                    # ＝跟随态每请求热路径炸。教训就近登记于此，照抄勿删。
+    raw = c.get("strata_config")
+    if not raw:
+        return None                          # 未配路径：不猜，退静态档
+    path = expand_path(raw, c.get("config_dir"))   # @here/相对口径（paths 已依赖）
+    try:
+        st = os.stat(path)
+    except Exception:
+        # 抓 Exception 非 OSError（rev11a B-1 顺带修·QA 探针实证）：os.stat 对含 NUL 的
+        # 路径串抛 ValueError（非 OSError 族）——统一退静态档，一切读失败不抛穿热路径。
+        _strata_parallel_cache = None        # stat 失败＝缓存作废，本请求退静态档
+        return None
+    guard = (st.st_mtime_ns, st.st_size)
+    cache = _strata_parallel_cache
+    if cache is not None and cache[0] == path and cache[1] == guard:
+        return cache[2]                      # 命中：零 open 零 parse
+    v = _strata_parallel_parse(path)
+    if v is not None:
+        _strata_parallel_cache = (path, guard, v)
+    else:
+        _strata_parallel_cache = None        # 解析失败＝不缓存坏值，下请求再试
+    return v
 
 
 def _gate_params(cfg_path):
@@ -337,14 +321,25 @@ def _gate_params(cfg_path):
         static_limit = int(c.get("max_inflight", 0))
     except (TypeError, ValueError, AttributeError):
         static_limit = GATE_DEFAULTS[0]
-    # rev11 gate-follow: with the switch on, the effective limit is the engine's
-    # last successfully read runtime value (F-2 cache, written only by the
-    # gate-follow thread); no reading ever -> static max_inflight as fallback.
+    # rev11a gate-follow (A-2 hook): with the switch on, the effective limit is
+    # the FIXED "parallel" value in the Strata startup-config file named by
+    # `strata_config` — the gateway only caps that upper bound (INTK-0003:
+    # 网关只卡上限，读启动配置定死值；引擎运行时降级网关不跟不问；INTK(00:31):
+    # 数字启动一次定死，不每请求重读——mtime 守卫缓存). Two-level fallback:
+    # file reading -> static max_inflight -> 0 = gate off. No file-cache
+    # last-good tier (rev11's polling last-good is retired; a read failure
+    # falls back to static, see _strata_parallel_limit failure states).
+    # A-3 (relation of max_inflight): it serves exactly two purposes — the
+    # fixed limit when follow is off, AND the fallback when follow is on but
+    # the file read fails. On-duty both are filled with the human-ruled
+    # parallel count (currently 2).
     # Switch off (default) -> the old fixed-value path, byte-for-byte unchanged.
+    # Hot path cost when follow is on: ONE os.stat + tuple compare (~4µs);
+    # guard hit = zero open, zero parse; zero upstream calls, zero locks (红线四).
     follow = c.get("gate_follow") is True
     if follow:
-        r = _engine_reading
-        limit = r[0] if r is not None else static_limit
+        v = _strata_parallel_limit(c)
+        limit = v if v is not None else static_limit   # 两级回退：文件读数→静态兜底
     else:
         limit = static_limit
     try:
@@ -961,12 +956,9 @@ def main():
     reporter = threading.Thread(target=_report_scheduler_loop, args=(cfg, out),
                                 name="ledger-daily-report", daemon=True)
     reporter.start()
-    # rev11 gate-follow reader (F-4): one daemon thread, bypass GET to the engine's
-    # /v1/status, writes only the module-level _engine_reading cache. With
-    # gate_follow off (default) it just re-reads the local config every 5s — zero
-    # observable change to relay/ledger/HTTP surfaces. daemon=True: never blocks.
-    threading.Thread(target=_follow_loop, args=(Handler.cfg_path,),
-                     name="gate-follow", daemon=True).start()
+    # rev11a X-1: the gate-follow daemon thread and its hook are removed —
+    # follow mode now reads the Strata startup-config file inside the
+    # per-request _gate_params path (mtime-guarded cache), zero threads.
     # Hardware monitor (formerly a separate 8089 process) is two more daemon
     # threads in this same process. A failure here cannot stop the ledger.
     monitor_on = False

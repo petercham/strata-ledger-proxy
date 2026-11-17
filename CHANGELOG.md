@@ -4,6 +4,16 @@
 
 ---
 
+## 2026-11-18（rev11a）· 排队闸跟随形态回流：读数源从引擎运行时轮询改为启动配置文件定死值（口径变更回流 · 三套全绿）
+
+- **现象**：rev11 的跟随实现是网关后台线程周期 GET 上游 `/v1/status` 读引擎**运行时**并发（含 `fit_parallel` 显存降级后的真实槽数）。人类 23:13 裁定驳回该口径（INTK-0003 逐字）：「引擎侧自己往下压和网关有什么关系？网关只负责卡住上限，引擎自己爱干什么干什么！」——跟随运行时值＝网关职权越界（卡上限≠跟降级）。
+- **根因**：rev11 票裁 R-2 把人类 21:08「看 Strata 实际的启动配置」过度延伸为「读运行时生效值」，把引擎内部降级机制引入网关关注面。本票系定向回流：rev11 按其票面是合格完工（三套全绿），回流＝口径变更非施工质量。
+- **改动**：`gate_follow` 开关沿用，新增 `strata_config`（启动配置文件路径，支持 @here/相对），删 `gate_follow_poll_s`。跟随态闸的有效 limit＝该文件顶层 `"parallel"` 定死值（int≥1 取该值不钳制——钳制归引擎；False/None/缺席/bool/非 int/负＝引擎单发语义，闸卡 1）。读法＝模块级缓存＋`(st_mtime_ns, st_size)` 守卫（人类 00:31 续话 INTK-0004：「这个数字启动之后还会变吗？只要 Strata 启动一次没有死掉就不用重读啊！」）：每请求仅一次 `os.stat`（~4µs），守卫命中零 open 零解析，文件保存即自动跟随、无需重启网关。失败态两态同一条（缺文件/路径空/JSON 坏）＝缓存作废＋当请求退 `max_inflight` 静态兜底，不沿旧值、不缓存坏值，文件恢复即自愈。回退链收缩两级（文件读数→静态兜底→0 关闸）。rev11 轮询子系统定向拆尽＝六项 grep 归零（`_follow_loop`/`_engine_status_fetch`/`_engine_reading`/`gate_follow_poll_s`/`global _engine_reading`/main() 线程挂点）——零线程、零 HTTP、零轮询；跟随态对话路径亦零上游 GET（stub 计数 hits=0 行为证）。作废三断言逐名登记（`follow limit tracks engine serving`/`follow last-good on status loss`/`follow poll bypasses gate and records nothing`），新三断言承接行为面（`follow limit from strata_config parallel`＝文件值判别＋mtime 变更生效＋守卫命中恒值／`follow file failure falls back to static`＝缺文件与坏 JSON 两态退静态／`follow on still never polls upstream`＝hits=0）。
+- **边界（不粉饰）**：引擎运行时往下压（显存降级/自调）网关不跟——闸仍卡启动配置文件上限，超出引擎能力的并发由引擎自身队列承接（最坏＝无闸现状），这是「网关只负责卡住上限」（23:13 裁定）的设计语义；配置文件中途不可读＝异常配置事故，当请求退兜底、下请求自愈、不沿旧缓存值。README 第九节第 11、12、13 条改写。
+- **selftest**：proxy 41→**41/41**（41−作废 3＋新 3）；`grep -c '^PASS  gate:'`＝**19**（rev10/rev10a 10＋防误杀 4＋保留跟随 2＋新增 3）；monitor **54/54**、watchdog **16 passed 0 failed** 不变。红线机检：`urlopen` 回基线 **3**、`v1/status`＝0、`threading.Thread` 回 **1**、`global _engine_reading`＝0、`gate_follow_poll_s`（代码）＝0；无新锁（Lock=1、Condition=1 逐值不变）；新缓存面落位机检（`_strata_parallel_cache`/`_strata_parallel_limit`/`st_mtime_ns`/`global _strata_parallel_cache` 在场，float `st_mtime` 守卫禁语归零）；防误杀族四断言零改动（diff 族面零行＋逐名 PASS）；Gate 类本体零改动。MANIFEST 2.22。在岗 `config.json` 删 `gate_follow_poll_s`＋加 `"strata_config": "D:/Strata/strata-unsloth-ud-iq4_xs.json"`＋换脑＝票后置动作（安全窗口主理人另排）。
+
+---
+
 ## 2026-11-17（rev11）· 排队闸跟随引擎实际并发：闸阈值从网关自填值改为上游引擎运行时读数（功能改动 · 三套全绿）
 
 - **现象**：rev10 排队闸的上限 `max_inflight` 是人在网关侧另填的一个数，与引擎运行时实际并发是两处口径——引擎 `fit_parallel` 显存降级、`--batch` 引擎自调都会改真实槽数，而网关那个数不会自己动。两处填数＝漂移风险；人类 21:08 裁定口径（INTK-0001 逐字）：「对，所以网关不需要自己创造，就看 Strata 实际的启动配置就好了」。

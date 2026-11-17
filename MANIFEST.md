@@ -1,6 +1,6 @@
 # 清单与来源登记
 
-发行版本：`strata-ledger-proxy` 2026-11-09（本次修订 2026-11-17 · rev11：排队闸跟随引擎实际并发（`gate_follow` 开关＋后台 `/v1/status` 读数缓存＋回退链）；rev10a：排队闸 v3 维护小批（入队观测即时可见＋死字段注释＋票面勘误登记）；rev10：网关侧排队闸 v3（对话请求 FIFO 准入＋SSE 等待心跳）；另含 rev9 CPU 卡型号、rev8 后补的 `config-examples/` 样例、README 踩坑登记、真机截屏配图与省钱计算器口径＋价表随包；git 仓形态，无 ZIP）
+发行版本：`strata-ledger-proxy` 2026-11-09（本次修订 2026-11-18 · rev11a：排队闸跟随形态回流（读数源＝`strata_config` 启动配置文件定死 `parallel` 值＋mtime 守卫缓存；rev11 运行时轮询系定向拆除）；rev11：排队闸跟随引擎实际并发（`gate_follow` 开关＋后台 `/v1/status` 读数缓存＋回退链——读源已被 rev11a 回流替换）；rev10a：排队闸 v3 维护小批（入队观测即时可见＋死字段注释＋票面勘误登记）；rev10：网关侧排队闸 v3（对话请求 FIFO 准入＋SSE 等待心跳）；另含 rev9 CPU 卡型号、rev8 后补的 `config-examples/` 样例、README 踩坑登记、真机截屏配图与省钱计算器口径＋价表随包；git 仓形态，无 ZIP）
 用途：给另一台机器（代号 5090）替换旧的「旁路边读引擎日志」账本链的**独立工具包**。
 运行要求：本机 Python 3.13 实测通过；3.8 未实测，静态检查未见 3.9+ 专有语法（内置泛型下标 `list[...]`、`X | Y` 联合类型、match 语句等均未使用）。主链仅标准库；`psutil` 与 `nvidia-smi` 为监控增强，缺失时自动降级。目标机若用更旧版本，请先跑 `bootstrap.py --selftest` 验证。
 
@@ -391,6 +391,20 @@
 | `MANIFEST.md` / `CHANGELOG.md` | 本节＋rev11 条目 | 登记 |
 
 **契约不变量核验**：`Gate` 类本体（`acquire`/`release`/`snapshot`/等待环/心跳路径）零改动——`git diff e791a75 -- collector_proxy.py | grep -cE '^[+-].*(def acquire|def release|def snapshot|self\._waiters|self\._cond|_gate_beat|_start_gate_chunked|_write_gate_hb)'` ＝ 0；`monitor_ext.py`/`monitor.js`/`monitor.html`/`monitor.css`/`selftest_monitor.py`/`ledger_watchdog.py`/`switch_proxy.py`/`selftest_watchdog.py` 零触碰；账本字段面零新增字段；`_pump`/`_start_chunked`/`do_GET` 转发本体/`_pass_post`/RELAY CONTRACT §1–4 零改动。热路径锁计数逐值不变：`threading.(Lock|RLock|Semaphore)`=1、`threading.Condition()`=1；`urlopen` 3→4（新点＝`_engine_status_fetch` 体内唯一新增）；红线一机检 `grep -cE '(429|409)'`＝0。三套回归当次：proxy 32→**41**、monitor **54/54**、watchdog **16 passed 0 failed**。**文件数不变**（无新增/删除文件）。**在岗动作属票后置**（`config.json` 加 `gate_follow:true` ＋换脑窗口由主理人另排，不在本票验收面）。
+
+### 2.22 rev11a：排队闸跟随形态回流——读数源从引擎运行时轮询改为启动配置文件定死值（2026-11-18 · 口径变更回流 · 三套全绿）
+
+背景（票 `2026-11-17-ledger-gate-follow-rev11a`，效力来源＝人类 23:13 裁定 INTK-0003 逐字「引擎侧自己往下压和网关有什么关系？网关只负责卡住上限，引擎自己爱干什么干什么！」＋00:31 续话 INTK-0004「难道这个数字启动之后还会变吗？只要 Strata 启动一次没有死掉就不用重读啊！」）：rev11 的 R-2 读源（后台线程轮询 `/v1/status` 读运行时 `concurrency.serving`）被 23:13 裁定替换——那是引擎内部降级事务，越出网关「卡上限」职权。本票续工改造 db87ddd 现头（非回退重开）：跟随的有效 limit＝`strata_config` 所指 Strata 启动配置文件顶层 `"parallel"` 定死值；每请求仅一次 `os.stat`，`(st_mtime_ns, st_size)` 守卫命中用缓存（零 open 零解析），变了才重读——改文件保存即效、无需重启（00:31 口径：数字启动一次定死不重读；守卫≠被禁的引擎运行时读数缓存）。失败态两态同一条＝缓存作废＋当请求退 `max_inflight` 静态兜底（不沿旧值、不缓存坏值）。回退链收缩两级。**红线五条**：无拒绝态；不触在飞；缺省零回归（基数锚 db87ddd，除 X-4 明列作废三条外全部原样通过）；热路径零新增上游调用零新增锁（跟随态亦零上游 GET，每请求一次 os.stat ~4µs）；裁定落实＝轮询系六项 grep 归零（`_follow_loop`/`_engine_status_fetch`/`_engine_reading`/`gate_follow_poll_s`/`global _engine_reading`/main() 挂点）。**验收重心不变＝防误杀族③-13~17/T-4 四断言零改动**（limit 来源与等待环正交）。
+
+| 文件 | 改动 | 为什么 |
+|---|---|---|
+| `collector_proxy.py` | X-1 拆净 `_engine_status_fetch`/`_follow_loop`/`_engine_reading` 声明注释/main() `gate-follow` 线程挂点；X-2 `FOLLOW_DEFAULTS` 整删（缺省 False 由 `c.get("gate_follow") is True` 承载，poll 键消费体已拆＝留之即死码）；X-3 `_gate_params` follow 分支重写＝两级回退（文件读数→静态兜底），last-good 档作废；A-1 `_strata_parallel_parse(path)` 纯解析 helper（int≥1 取原值不钳制＝钳制归引擎 A-4；False/None/缺席/bool/非 int/负→1＝引擎单发语义 `server.py:3594-3602` 实证；一切读失败 None 不抛）；A-2 `_strata_parallel_limit(c)`＋模块级 `_strata_parallel_cache=(path,(mtime_ns,size),limit)`——函数体首行 `global _strata_parallel_cache`（B-1 修·rev11 D1 同族坑第二次·教训注释就近登记）、`os.stat` 抓 `except Exception`（NUL 路径抛 ValueError 非 OSError 族·QA 探针实证）、守卫命中零 open 零 parse、stat/解析失败＝缓存作废退静态、无锁纪律＝单名整体重绑元组（GIL 原子）并发 miss 重复解析幂等；A-3 注释＝`max_inflight` 仅两用途（follow 假固定值＋follow 真读失败兜底，在岗两值同填人类已裁数 2）；顶部 `from paths import expand_path`（paths 本就是硬依赖） | 网关只卡启动配置上限（23:13 字面执行）；mtime 守卫贴 00:31「不重读」且消掉纯启动一次形态的换脑滞后窗口（票裁 A-2 三条理由在册）；无文件 last-good＝事故退兜底比沿旧值可解释 |
+| `config.template.json` | 删 `"gate_follow_poll_s": 5`；`gate_follow` 后新增 `"strata_config": ""`；comment 跟随段整改写（含「rev11 运行时轮询读法已废」如实登记＋mtime 守卫口径＋兜底建议） | 缺省零回归从模板起；不留死键 |
+| `selftest_proxy.py` | X-4 作废三断言逐名删除登记（`gate:follow limit tracks engine serving`/`gate:follow last-good on status loss`/`gate:follow poll bypasses gate and records nothing`——对象＝R-2 作废面，非断言质量缺陷）；X-5 stub `/v1/status` 分支降形＝只计数＋回固定值（保留理由＝③-4 判据证据面·票裁 A-5），`STATUS_MODE`/`STATUS_SERVING` 声明与非 T-4 消费删除，**T-4 组头钉态行保留原样**（②-2 禁动面·v3 C-1 写死；删声明后成无害死写）；K-1 `gate:follow boot fallback to static max_inflight` 改体留名（`strata_config` 指不存在路径替代 STATUS_MODE 机制，主张不变）；A-4 新断言 `gate:follow limit from strata_config parallel`（文件 1 vs 静态 2 判别＋改写文件 mtime 守卫失效 ext limit 1→2＋第四请求守卫命中恒 2）＋`gate:follow file failure falls back to static`（缺文件退静态 1＋运行中改指坏 JSON 读数仍 1＝坏值不入缓存）；A-5 `gate:follow on still never polls upstream`（跟随组全程 stub hits=0）；T-4 防误杀组零改动 | 新三断言承接作废面行为验证；③-4 判据机械承载；防误杀族＝验收重心零降级 |
+| `README.md` | §八 跟随段改写＝文件读形态口径（「不跟、不问」字面＋缓存≠「不缓存」禁语的区分句就近写明）；§九 11/12/13 改写（11＝mtime 守卫即时性＋进闸快照不变；12＝沿原文含文件改小；13＝两级回退＋「引擎往下压网关不跟＝设计语义非缺陷」换写句＋中途不可读事故退兜底补句） | 边界不许粉饰；防「不缓存」禁语误读自相矛盾 |
+| `MANIFEST.md` / `CHANGELOG.md` | 本节＋rev11a 条目（根因段如实登记 R-2 被 23:13 裁定替换·INTK-0003 指针逐字引用，不粉饰不静默覆盖） | 登记 |
+
+**验收读数（票③逐条）**：闭集 diff 外零文件；proxy **41/41**（41−3＋3）连续三跑稳定、monitor **54/54**、watchdog **16 passed 0 failed**；`grep -c '^PASS  gate:'`＝**19**（10＋防误杀 4＋保留跟随 2＋新增 3）；作废三名输出归零；`urlopen`＝**3**（回 e791a75 基线）、`v1/status`＝0、`threading.Thread`＝**1**（回基线）、`global _engine_reading`＝0、六名复合 grep＝0、`gate_follow_poll_s`（代码）＝0；锁计数逐值不变 Lock=1/Condition=1；缓存面落位 `_strata_parallel_cache`≥1/`_strata_parallel_limit`≥2/`st_mtime_ns`≥1/`global _strata_parallel_cache`≥1/float `st_mtime` 禁语＝0；新断言两枚 PASS＋boot fallback 仍 PASS（改体留名）；防误杀族四名 PASS＋族面 diff 零行；Gate 本体零改动；红线一机检 `(429|409)`＝0；模板落位 OK；README `gate_follow_poll_s`/`fit_parallel`/`最后一次成功读数` 三枚归零＋「不跟、不问」≥1＋CHANGELOG `23:13`/`INTK-0003` ≥1 各。**文件数不变**。**在岗动作属票后置**（删 `gate_follow_poll_s`＋加 `"strata_config": "D:/Strata/strata-unsloth-ud-iq4_xs.json"`＋换脑窗口主理人另排，不在本票验收面）。
 
 
 ## 三、如实登记：代码分叉
