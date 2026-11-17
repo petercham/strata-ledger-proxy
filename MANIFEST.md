@@ -1,6 +1,6 @@
 # 清单与来源登记
 
-发行版本：`strata-ledger-proxy` 2026-11-09（本次修订 2026-11-17 · rev9：CPU 卡标题带型号；另含 rev8 后补的 `config-examples/` 样例、README 踩坑登记与真机截屏配图；git 仓形态，无 ZIP）
+发行版本：`strata-ledger-proxy` 2026-11-09（本次修订 2026-11-17 · rev9：CPU 卡标题带型号；另含 rev8 后补的 `config-examples/` 样例、README 踩坑登记、真机截屏配图与省钱计算器口径＋价表随包；git 仓形态，无 ZIP）
 用途：给另一台机器（代号 5090）替换旧的「旁路边读引擎日志」账本链的**独立工具包**。
 运行要求：本机 Python 3.13 实测通过；3.8 未实测，静态检查未见 3.9+ 专有语法（内置泛型下标 `list[...]`、`X | Y` 联合类型、match 语句等均未使用）。主链仅标准库；`psutil` 与 `nvidia-smi` 为监控增强，缺失时自动降级。目标机若用更旧版本，请先跑 `bootstrap.py --selftest` 验证。
 
@@ -8,7 +8,7 @@
 
 ## 一、文件清单
 
-本发行版共 **33 个文件**（根目录 23 个 + `service-examples/` 3 个 + `legacy/` 3 个 + `config-examples/` 2 个 + `docs/` 2 个；下表把服务示例与兼容件各归并成一行通配登记）。逐项来源见下表，仓内条目以当次实际提交为准，不在此写死随版本变化的计数。
+本发行版共 **35 个文件**（根目录 24 个 + `service-examples/` 3 个 + `legacy/` 3 个 + `config-examples/` 2 个 + `docs/` 3 个；下表把服务示例与兼容件各归并成一行通配登记）。逐项来源见下表，仓内条目以当次实际提交为准，不在此写死随版本变化的计数。
 
 | 文件 | 作用 | 来源 |
 |---|---|---|
@@ -40,6 +40,8 @@
 | `config-examples/ubuntu-pro5000-4090-dual-gpu.json` | Linux 双卡工作站装配参考样例（双卡零配置示范，comment 内嵌降级与 systemd 口径） | 按模板缺省口径组装（非实机抄录），2026-11-17 |
 | `docs/monitor-hardware.png` | README 配图：`/monitor` 硬件区真机在岗实拍（浅色主题） | Edge headless 实拍 + 按内容边界裁切，2026-11-17（见 2.15 节） |
 | `docs/monitor-ledger.png` | README 配图：`/monitor` 账本区真机在岗实拍（最近请求含合计行、对话缓存） | 同上 |
+| `api-price-table.csv` | 省钱计算器价表数据（22 款模型公开 API 牌价，含出处与峰谷/分档备注，2026-11-05 逐家官方页核验）——`html_report.py` 注释一直引用它，rev8 前未随包，本轮补入销掉悬空指针 | 母本副本（与 000 在岗 `usage/api-price-table.csv` cmp 一致），2026-11-17 |
+| `docs/savings-calculator.png` | README 配图：网页报表「省钱计算器」近 30天真机账本折算实拍 | Edge headless 实拍 + 裁切，2026-11-17（见 2.17 节） |
 | `legacy/collector_log.py` | 旧读日志采集器（可选兼容件） | 母本副本，未改 |
 | `legacy/scheduler.py` | 旧定时排程（可选兼容件） | 母本副本，未改 |
 | `legacy/README.md` | 兼容件说明 | 本包新写 |
@@ -321,6 +323,19 @@
 **在岗换脑实况（如实登记）**：三文件已同步在岗位（cmp 字节级一致）；第一轮 `switch_proxy.py` 读到 2 条 ESTABLISHED idle 连接 → 硬拒绝未 force。第二轮（17:41，操作会话处工具段、无在飞生成的安全窗）`--force` 切换成功：1.52 秒回岗、新 pid 38164、`/health` 200；`/ext.json` 出 `cpu_name: "AMD Ryzen 9 7950X 16-Core Processor"` + `cpu_mhz` 正常。前端实拍复核：CPU 卡标题 `CPU · AMD Ryzen 9 7950X 16-Core Processor`，一行不撑。README 硬件区截图同步刷新（commit 8ccba89）。
 
 ---
+
+### 2.17 rev8 后补五：省钱口径入 README + 价表 csv 补入仓（2026-11-17 · 纯文档/数据，功能代码零改动）
+
+背景：皮总指出本地算力用户最核心的一句话＝「想知道自己用了多少、相比接入 API 省了多少钱」，且本机网页报表早已内置省钱计算器。自查：该功能在 README 卖点区**完全没提**（藏在 html_report 实现里）；且 `html_report.py` 注释「见 api-price-table.csv」是**悬空指针**——csv 从未随包，002 拉到的是指向空气的引用。
+
+| 文件 | 改动 | 为什么 |
+|---|---|---|
+| `api-price-table.csv`（新增） | 价表随包（22 款模型公开牌价，含各家出处、峰谷/分档备注；与 000 在岗 csv cmp 字节一致） | 销掉悬空指针；计算器数字的出处必须可查 |
+| `docs/savings-calculator.png`（新增） | 网页报表近 30 天折算实拍：GPT-6 Astra $5,600（≈¥39,300）～最便宜可比 $29（≈¥205）；账本两行口径与 KPI 在图上不含身份列 | 省钱是本地算力叙事的核心卖点，图比文字有力；实拍不示意 |
+| `README.md` | 卖点区新增「想知道省了多少钱，一键算」条目（排第二条，紧跟账按人算）；第四节命令块后加计算器导读段＋配图 | 用户最关心的事不能在 README 里缺席 |
+
+**脱敏实证**：csv 全部为公开牌价与厂商官方页出处，0 处内部数据；截图裁切区为价格折算表＋通用 KPI 条（请求数/解码 tok/s/tokens 总量），无人名、无指纹、无 key、无 IP。截图生成于临时合并盒（`calcbox`，35 天旧链+新链账本合并出表），在岗 `data/` 未动。
+
 ## 三、如实登记：代码分叉
 
 这套脚本与 5090 工具包里的 `skill-token-ledger/scripts/collector_proxy.py`（母本，260 行）**不是同一份文件**：
