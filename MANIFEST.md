@@ -8,7 +8,7 @@
 
 ## 一、文件清单
 
-本发行版共 **31 个文件**（根目录 23 个 + `service-examples/` 3 个 + `legacy/` 3 个 + `config-examples/` 2 个；下表把服务示例与兼容件各归并成一行通配登记）。逐项来源见下表，仓内条目以当次实际提交为准，不在此写死随版本变化的计数。
+本发行版共 **33 个文件**（根目录 23 个 + `service-examples/` 3 个 + `legacy/` 3 个 + `config-examples/` 2 个 + `docs/` 2 个；下表把服务示例与兼容件各归并成一行通配登记）。逐项来源见下表，仓内条目以当次实际提交为准，不在此写死随版本变化的计数。
 
 | 文件 | 作用 | 来源 |
 |---|---|---|
@@ -38,6 +38,8 @@
 | `service-examples/*` | 登录自启 / systemd / launchd 示例 | 本包新写 |
 | `config-examples/windows-5090-single-gpu.json` | Windows 单卡终端在岗配置样例（IPv6 双栈门面 + 引擎退环回 + lock 避让改值示范） | 000 在岗实机抄录，去 `key_labels`，2026-11-17 |
 | `config-examples/ubuntu-pro5000-4090-dual-gpu.json` | Linux 双卡工作站装配参考样例（双卡零配置示范，comment 内嵌降级与 systemd 口径） | 按模板缺省口径组装（非实机抄录），2026-11-17 |
+| `docs/monitor-hardware.png` | README 配图：`/monitor` 硬件区真机在岗实拍（浅色主题） | Edge headless 实拍 + 按内容边界裁切，2026-11-17（见 2.15 节） |
+| `docs/monitor-ledger.png` | README 配图：`/monitor` 账本区真机在岗实拍（最近请求含合计行、对话缓存） | 同上 |
 | `legacy/collector_log.py` | 旧读日志采集器（可选兼容件） | 母本副本，未改 |
 | `legacy/scheduler.py` | 旧定时排程（可选兼容件） | 母本副本，未改 |
 | `legacy/README.md` | 兼容件说明 | 本包新写 |
@@ -293,6 +295,18 @@
 | `CHANGELOG.md` | 新增条目 | 登记 |
 
 **分叉登记不受影响**：母本 `resp.read()` 整包缓冲的事实仍在 MANIFEST 第三节（对照表处）与 SKILL.md「与旧 skill-token-ledger 的关系」节，两处未动。
+
+---
+
+### 2.15 README 配真机在岗截屏两张（2026-11-17 · 纯文档，功能代码零改动）
+
+| 文件 | 改动 | 为什么 |
+|---|---|---|
+| `docs/monitor-hardware.png`（新增） | 真实在岗机器 `/monitor` 截屏上半区（模型状态 + 速度/GPU/PCIe/CPU + 内存/两盘/网卡 + 网卡合计），Edge headless 实拍后按内容边界裁切 | 皮总提议配图说明好处；用真机在岗实拍而非示意图，与「不卖幻觉」口径一致 |
+| `docs/monitor-ledger.png`（新增） | 同页下半区（上下文占用 / 最近请求表含合计行 / 对话缓存） | 账本区是「谁在用、用了多少」主张的直接证据 |
+| `README.md` | 卖点区后插入两张图＋两句图注（真机实拍口径、深浅主题与 UUID 绑卡口径）；账本图配一句「82% 输入 token 复用 ↔ 解码稳 110+ tok/s」的解读 | 图要带读法，不然访客不知道看什么 |
+
+**脱敏实证（截图前目检＋入仓前复检）**：两图无 8 位指纹（该机无 key 模式，请求表本就无身份列）、无姓名、无 key、无 IPv6/内网地址；画面内出现的均为硬件型号与运行时读数（盘型号、5090、温度、tok/s）。截图为浅色主题（README 静态图无主题跟随，图注注明）。原始全页截图留存于本机 `D:\Strata\.workbuddy\shots\`，不入库。
 
 ---
 ## 三、如实登记：代码分叉
