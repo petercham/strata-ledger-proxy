@@ -1,6 +1,6 @@
 # 清单与来源登记
 
-发行版本：`strata-ledger-proxy` 2026-11-09（本次修订 2026-11-17 · rev10：网关侧排队闸 v3（对话请求 FIFO 准入＋SSE 等待心跳）；另含 rev9 CPU 卡型号、rev8 后补的 `config-examples/` 样例、README 踩坑登记、真机截屏配图与省钱计算器口径＋价表随包；git 仓形态，无 ZIP）
+发行版本：`strata-ledger-proxy` 2026-11-09（本次修订 2026-11-17 · rev10a：排队闸 v3 维护小批（入队观测即时可见＋死字段注释＋票面勘误登记）；rev10：网关侧排队闸 v3（对话请求 FIFO 准入＋SSE 等待心跳）；另含 rev9 CPU 卡型号、rev8 后补的 `config-examples/` 样例、README 踩坑登记、真机截屏配图与省钱计算器口径＋价表随包；git 仓形态，无 ZIP）
 用途：给另一台机器（代号 5090）替换旧的「旁路边读引擎日志」账本链的**独立工具包**。
 运行要求：本机 Python 3.13 实测通过；3.8 未实测，静态检查未见 3.9+ 专有语法（内置泛型下标 `list[...]`、`X | Y` 联合类型、match 语句等均未使用）。主链仅标准库；`psutil` 与 `nvidia-smi` 为监控增强，缺失时自动降级。目标机若用更旧版本，请先跑 `bootstrap.py --selftest` 验证。
 
@@ -365,6 +365,18 @@
 **契约不变量核验**：`_pump` 帧语义、`_start_chunked`/`_send_fixed`/`_pass_post`/`do_GET`/`_read_body`/`_forward_headers`/`_clean_headers` 本体零改动；账本既有字段语义与写入条件零改动（新增字段仅 `queue_wait_ms`）；RELAY CONTRACT §1–4 未回归（`grep -cE '(429|409)' collector_proxy.py` ＝ 0）。`ledger_watchdog.py`/`switch_proxy.py`/引擎侧/在岗位零触碰。三套回归当次：proxy 22→31、monitor 52→54、watchdog 16 不变。
 
 **文件数不变**（本轮无新增/删除文件，仍 35 个）；`selftest_monitor.py` 描述行按 2.19 口径理解为含 gate 行为冒烟。**在岗同步属票后置动作**（安全窗口由主理人另排；本机在岗首值 `max_inflight: 1` 属换脑窗口口径，不在本票执行）。
+
+### 2.20 rev10a：排队闸 v3 维护小批——入队观测即时可见＋死字段注释＋票面勘误登记（2026-11-17 · 观测时效修复 · 三套全绿）
+
+背景（票 `2026-11-17-ledger-gate-v3-rev10a`，决策输入件＝QA 对 rev10 双重审计三项建议）：QA C3 探针实测 `queued_seen_in_ext=0`——请求入队后、首个 `queue_beat_s` 心跳前，`/ext.json` 的 `gate.queued` 滞后至多一个心跳周期才可见；另 rev10 票 ②-3 S-5 伪码与 S-8 声明自相矛盾需登记（零代码·仓外勘误件）；`Gate.queued` 死计数需就近注释。**红线三条沿 rev10**：无拒绝态；不触在飞；缺省 `max_inflight=0` 行为不变。闸语义零变化，纯观测时效修复。
+
+| 文件 | 改动 | 为什么 |
+|---|---|---|
+| `collector_proxy.py` | E-2：`Gate.acquire` 入列与等待内环拆两段临界区——入列段（快路判断＋入列＋局部标志 `enqueued_now`）退出锁后、首次 `_cond.wait` 前**锁外** `_push_gate` 恰一次（与 `on_beat` 同纪律），等待内环重新进锁；快路不入列不 push、每次 acquire 至多一次入队 push、既有三处 push 调用点内容零改动、`_last_limit` 时序依赖不变（`do_POST` acquire 前已 `_gate_params`）。E-3：`Gate.__init__` `self.queued = 0` 行就近注释（display truth via `_waiters, do not read this field`；`snapshot` 的 `queued` 键用 `len(self._waiters)` 实时值），语义零改动 | 入队瞬间即推＝消除观测滞后至多 `queue_beat_s` 的损失（QA C3 根因）；持锁不得做 monitor 侧推送 |
+| `selftest_proxy.py` | T-2 新增 gate 组断言 `gate:queued visible in ext before first beat`：每请求重读 config 调 `queue_beat_s=10.0`/`gate_wait_s=8.0` 不重启→hold 占满唯一槽→第二请求入队→3s 轮询 `/ext.json` 见 `queued>=1` 记 `t_seen`→断言 `t_seen < 10.0`（修复前判红＝首 push 点在 10s 心跳；修复后典型读数 ≈1–2s）→`HOLD_GATE.set()` 收尾→cfg 恢复 gate 阶段值。既有 15＋9 组断言逐字零改动。当次 32/32 | 判别力对修复前判红成立（QA boxA 实跑坐实），观测时效修复须有机械守卫 |
+| （仓外）`rev10-gate-v3-erratum.md` | E-1 勘误登记件落治理族 `D:\Strata\.workbuddy\collab\tickets\`：登记 rev10 票 ②-3 S-5 伪码（`_gate_beat` 未置 `responded = True`）与 S-8 声明矛盾；实现事实（81783d5 已置位）＝必要纠正；rev10 票本体 append-only 不回改 | 照票复建者须以登记件为准，勿照 S-5 字面省略 `responded = True`（否则违 RELAY CONTRACT §4 第二状态行） |
+
+**验收读数（票③七条）**：闭集 diff 外零文件；proxy **32/32**（31＋新 1）、monitor **54/54**、watchdog **16** 不变；`grep -c '^PASS  gate:'`＝10；`_push_gate` 实得 5 行＝def 1＋调用 4（新调用在 acquire 两段临界区之间·锁外）；死字段注释 grep 命中同行；红线机检 `grep -cE '(429|409)' collector_proxy.py` ＝ 0；勘误件在场含双锚点。
 
 
 ## 三、如实登记：代码分叉

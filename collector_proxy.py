@@ -128,7 +128,7 @@ class Gate:
         self._waiters = collections.deque()   # elements: [seq:int, granted:bool]
         self._seq = 0
         self.inflight = 0
-        self.queued = 0
+        self.queued = 0                       # monotonic counter (never decremented); display truth via _waiters, do not read this field — snapshot's queued key uses len(self._waiters) live value
         self.waited_total = 0                 # ms accumulated across waited requests
         self.beat_total = 0                   # heartbeat frames ever emitted
 
@@ -143,6 +143,11 @@ class Gate:
         while True:
             outcome = None                    # "granted" / "expired" / None=keep waiting
             beat_now = False
+            enqueued_now = False
+            # Critical section 1 (enrol): first pass only — fast path, or join
+            # the queue once. The `my is None` guard preserves the original
+            # structure exactly: on a beat-restart pass this section is a
+            # no-op and the wait loop resumes in critical section 2.
             with self._cond:
                 if my is None:
                     if self.inflight < limit:         # fast path: a free slot
@@ -152,6 +157,15 @@ class Gate:
                     self._seq += 1
                     self._waiters.append(my)
                     self.queued += 1
+                    enqueued_now = True
+            # rev10a E-2: one enqueue push OUTSIDE the Condition lock (same
+            # off-lock discipline as on_beat), at the instant of enrolment,
+            # before the first _cond.wait — so /ext.json gate.queued stops
+            # lagging up to queue_beat_s. Fast path never reaches here.
+            if enqueued_now:
+                _push_gate(self)
+            # Critical section 2 (wait): re-enter the lock for the wait loop.
+            with self._cond:
                 while True:
                     if my[1]:                         # slot handed over by release()
                         outcome = "granted"

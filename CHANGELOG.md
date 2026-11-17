@@ -4,6 +4,17 @@
 
 ---
 
+## 2026-11-17（rev10a）· 排队闸 v3 维护小批：入队观测即时可见＋死字段注释＋票面勘误登记（观测时效修复 · 三套全绿）
+
+- **现象**：满位时第二请求入列后、首个 `queue_beat_s` 心跳前，`/ext.json` 的 `gate.queued` 滞后至多一个心跳周期才可见——QA 复攻 C3 探针实测 `queued_seen_in_ext=0`（观测损失根因＝入列与等待内环同处一个 `with self._cond:` 临界区，块内无 push 点，入队后首个 push 落在 10s 心跳）。
+- **根因定位**：`Gate.acquire` 入列瞬间不推观测；`_push_gate` 三调用点（acquire 返回后/release 后/心跳计数后）全部晚于入列时刻。属观测时效缺陷，非闸语义缺陷。
+- **改动**：E-2＝`Gate.acquire` 拆两段临界区——入列段（快路＋入列＋局部标志）退出锁后、首次 `_cond.wait` 前**锁外** `_push_gate` 恰一次（与 `on_beat` 同纪律：持锁不做 monitor 侧推送）；快路不入列不 push、每 acquire 至多一次入队 push、既有三处调用点内容零改动、`_last_limit` 时序不破坏。E-3＝`Gate.__init__` `self.queued = 0` 就近注释（展示真值走 `_waiters`，勿读此字段；`snapshot` 的 `queued` 键用 `len(self._waiters)` 实时值），语义零改动。T-2＝proxy 自测新增 gate 断言 `gate:queued visible in ext before first beat`（`queue_beat_s=10.0` 不重启调参＋3s 轮询窗口＋`t_seen < 10` 判别，修复前判红、修复后 ≈1–2s 判绿；收尾恢复 cfg）。
+- **边界（不粉饰）**：观测时效修复，闸语义零变化——无拒绝态、不触在飞、缺省 `max_inflight=0` 行为不变全部沿 rev10 红线；`queued` 键仅**出现时机**提前，`/ext.json` 键面契约不变。
+- **勘误登记（仓外）**：rev10 票 ②-3 S-5 伪码（`_gate_beat` 未置 `responded = True`）与 S-8 声明自相矛盾，落独立登记件 `rev10-gate-v3-erratum.md`（治理族，不在仓内）；81783d5 实现已置位＝必要纠正（QA 判据③ `status_lines=1` 佐证）；rev10 票本体 append-only 不回改。
+- **selftest**：proxy 31→**32/32**（既有 15＋9 组逐字零改动＋新 1）；monitor **54/54**、watchdog **16** 均与基线同数。红线机检 `grep -cE '(429|409)' collector_proxy.py` = 0；`_push_gate` 调用点 3→4（新点居两段临界区之间·锁外）。MANIFEST 2.20。在岗换脑属票后置动作（安全窗口主理人另排）。
+
+---
+
 ## 2026-11-17（rev10）· 排队闸 v3：网关侧对话请求 FIFO 准入＋SSE 等待心跳（功能改动 · 三套全绿）
 
 - **现象**：引擎并行模式（本机 parallel=2）准入环节无闸、work-conserving、无 FIFO 序——多请求并发时会话降成龟速（实机：双满每行 ~32 tok/s vs 独行 ~110）。源码核对实锤引擎 `QUEUE_BEAT_S=10` 心跳纯保活非准入闸。

@@ -768,6 +768,40 @@ def main():
             and g.get("limit") == 1,
             "gate=%s" % g)
 
+        # 25. rev10a T-2: queued visible in /ext.json at the INSTANT of enrolment,
+        #     long before the first queue_beat_s heartbeat. Per-request config
+        #     re-read lets us push queue_beat_s to 10.0 with NO restart: under the
+        #     old behaviour the first post-enrolment push would be the 10s beat, so
+        #     a 3s poll window could never see queued>=1 (fails pre-fix, passes post).
+        BEAT_T2 = 10.0
+        cfg3 = dict(cfg2)
+        cfg3["queue_beat_s"] = BEAT_T2               # far beyond the 3s poll window
+        cfg3["gate_wait_s"] = 8.0                    # no expiry-forced forward inside the window
+        with open(cfg_path, "w", encoding="utf-8") as f:
+            json.dump(cfg3, f)
+        held = {}
+        tA = pin_slot("t2vis", held)                 # the only slot is verifiably pinned
+        t0q = time.monotonic()
+        tB = start_hold("t2q", held)                 # 2nd request enters the gate queue
+        t_seen, q_seen = None, 0
+        endq = time.monotonic() + 3.0                # poll window: 3s << queue_beat_s
+        while time.monotonic() < endq:
+            gq = (read_ext().get("gate") or {})
+            q_seen = gq.get("queued") or 0
+            if q_seen >= 1:
+                t_seen = time.monotonic() - t0q
+                break
+            time.sleep(0.05)
+        HOLD_GATE.set()                              # release -> queued request completes (红线二 safe)
+        tB.join(timeout=15)
+        tA.join(timeout=10)
+        rec("gate:queued visible in ext before first beat",
+            t_seen is not None and t_seen < BEAT_T2,
+            "queued first seen=%s t_seen=%ss queue_beat_s=%s (3s poll window << first beat)"
+            % (q_seen, "%0.2f" % t_seen if t_seen is not None else "never", BEAT_T2))
+        with open(cfg_path, "w", encoding="utf-8") as f:   # restore gate-stage cfg (per-request re-read)
+            json.dump(cfg2, f)
+
         bad = [n for n, ok, _ in RESULTS if not ok]
         print("\n%d/%d PASS" % (len(RESULTS) - len(bad), len(RESULTS)))
         if bad:
