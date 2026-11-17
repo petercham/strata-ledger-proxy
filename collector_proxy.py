@@ -77,6 +77,13 @@ except Exception:
 CANON_INT = ("prompt", "cached", "new_prompt", "gen")
 BODY_ACCUM_CAP = 32 * 1024 * 1024        # stop keeping the private copy past 32 MiB; relay is unaffected
 GATE_DEFAULTS = (0, 10.0, 600.0)         # (max_inflight, queue_beat_s, gate_wait_s); 0 = gate off
+FOLLOW_DEFAULTS = (False, 5.0)           # (gate_follow, gate_follow_poll_s); false = follow off, fixed-value gate
+# Engine-reading cache, rev11 gate-follow. Discipline (do not regress):
+#   unique writer = the F-4 "gate-follow" daemon thread (_follow_loop);
+#   a write = rebind the whole tuple (GIL-atomic), elements are NEVER mutated in place;
+#   readers (F-5 _gate_params) only dereference, never take a lock;
+#   None = never successfully read yet (fallback chain starts at max_inflight).
+_engine_reading = None                   # (limit:int, at:monotonic:float) | None
 _HOP_HEADERS = {
     "host", "content-length", "transfer-encoding", "connection", "keep-alive",
     "upgrade", "trailer", "te", "proxy-authenticate", "proxy-authorization",
@@ -239,6 +246,85 @@ def _push_gate(gate):
             pass
 
 
+def _engine_status_fetch(cfg):
+    """One bypass GET: {upstream}/v1/status -> concurrency.serving as int, else None.
+
+    Success requires ALL of: HTTP 200, parseable JSON, concurrency.serving present
+    and int(...) >= 1. Anything else (HTTPError, timeout, connection error, bad
+    JSON, missing field, value < 1 or non-int) returns None — this function never
+    raises. It is the ONLY new urlreq call site of rev11 gate-follow:
+    a background-thread bypass GET, never through the gate, never in the ledger.
+    """
+    try:
+        req = urlreq.Request(cfg["upstream"].rstrip("/") + "/v1/status", method="GET")
+        key_env = cfg.get("upstream_key_env")
+        if key_env:
+            key = os.environ.get(key_env, "")
+            if key:
+                req.add_header("Authorization", f"Bearer {key}")
+        with urlreq.urlopen(req, timeout=5.0) as resp:
+            if resp.status != 200:
+                return None
+            obj = json.loads(resp.read())
+        serving = int((obj.get("concurrency") or {}).get("serving"))
+        return serving if serving >= 1 else None
+    except Exception:
+        return None
+
+
+def _follow_loop(cfg_path):
+    """rev11 gate-follow daemon: poll the engine's runtime concurrency and cache it.
+
+    The gate's effective limit then FOLLOWS the engine's actual serving parallelism
+    (including fit_parallel VRAM downgrades and engine-side --batch self-tuning);
+    nobody has to fill the same number in two places. Config is re-read every
+    cycle, so toggling gate_follow needs no restart (same re-read discipline as
+    the rev10 per-request gate params).
+    """
+    global _engine_reading          # D1 fix (QA probe A): without this line, writes to
+                                    # _engine_reading inside the function body are judged
+                                    # local by Python -> read-before-write UnboundLocalError
+                                    # -> swallowed by this loop's own except -> follow
+                                    # silently fails. Lesson registered here; copy verbatim.
+    while True:
+        poll_s = FOLLOW_DEFAULTS[1]     # D2 fix (QA probe B; "default binding outside
+                                        # the try" form, fixed): the sleep argument is
+                                        # bound every turn BEFORE the try, so a first-
+                                        # pass load_config blow-up cannot NameError.
+        runlog = None                   # same off-try default binding discipline: the
+                                        # except path must never hit an unbound name
+        try:
+            c = load_config(cfg_path)
+            runlog = os.path.join(c.get("out_dir", ""), "ledger-service.log")
+            follow = c.get("gate_follow") is True
+            try:
+                poll_s = float(c.get("gate_follow_poll_s", FOLLOW_DEFAULTS[1]))
+            except (TypeError, ValueError):
+                poll_s = FOLLOW_DEFAULTS[1]          # bad value -> default
+            if poll_s < 0.5:
+                poll_s = 0.5                         # clamp floor (small test values stay legal)
+            if follow:
+                v = _engine_status_fetch(c)
+                if v is not None:
+                    if _engine_reading is None or _engine_reading[0] != v:   # log on change only, best-effort
+                        _append_line(runlog,
+                                     f"[{datetime.now():%Y-%m-%d %H:%M:%S}] gate follow: "
+                                     f"limit {_engine_reading[0] if _engine_reading else None} -> {v} "
+                                     "(engine /v1/status serving)")
+                    _engine_reading = (v, time.monotonic())      # the ONLY write site (global declared above)
+                # read failure: _engine_reading untouched = last good value stays valid
+                # indefinitely (fallback chain level 1).
+            # follow false: zero upstream requests, just re-read config next cycle
+            # (toggling the switch needs no restart, same re-read discipline as rev10).
+        except Exception:
+            if runlog:
+                _append_line(runlog, f"[{datetime.now():%Y-%m-%d %H:%M:%S}] "
+                                     f"gate follow loop ERROR: {traceback.format_exc()}")
+            # swallowed by design: the thread never dies; sleep(poll_s) below is safe
+            # because poll_s is always bound (off-try default above).
+        time.sleep(poll_s)
+
+
 def _gate_params(cfg_path):
     """Per-request config re-read: changing the thresholds needs no restart."""
     global _last_limit
@@ -248,9 +334,19 @@ def _gate_params(cfg_path):
         _last_limit = GATE_DEFAULTS[0]
         return GATE_DEFAULTS
     try:
-        limit = int(c.get("max_inflight", 0))
+        static_limit = int(c.get("max_inflight", 0))
     except (TypeError, ValueError, AttributeError):
-        limit = GATE_DEFAULTS[0]
+        static_limit = GATE_DEFAULTS[0]
+    # rev11 gate-follow: with the switch on, the effective limit is the engine's
+    # last successfully read runtime value (F-2 cache, written only by the
+    # gate-follow thread); no reading ever -> static max_inflight as fallback.
+    # Switch off (default) -> the old fixed-value path, byte-for-byte unchanged.
+    follow = c.get("gate_follow") is True
+    if follow:
+        r = _engine_reading
+        limit = r[0] if r is not None else static_limit
+    else:
+        limit = static_limit
     try:
         beat_s = float(c.get("queue_beat_s", 10))
     except (TypeError, ValueError, AttributeError):
@@ -865,6 +961,12 @@ def main():
     reporter = threading.Thread(target=_report_scheduler_loop, args=(cfg, out),
                                 name="ledger-daily-report", daemon=True)
     reporter.start()
+    # rev11 gate-follow reader (F-4): one daemon thread, bypass GET to the engine's
+    # /v1/status, writes only the module-level _engine_reading cache. With
+    # gate_follow off (default) it just re-reads the local config every 5s — zero
+    # observable change to relay/ledger/HTTP surfaces. daemon=True: never blocks.
+    threading.Thread(target=_follow_loop, args=(Handler.cfg_path,),
+                     name="gate-follow", daemon=True).start()
     # Hardware monitor (formerly a separate 8089 process) is two more daemon
     # threads in this same process. A failure here cannot stop the ledger.
     monitor_on = False

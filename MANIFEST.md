@@ -1,6 +1,6 @@
 # 清单与来源登记
 
-发行版本：`strata-ledger-proxy` 2026-11-09（本次修订 2026-11-17 · rev10a：排队闸 v3 维护小批（入队观测即时可见＋死字段注释＋票面勘误登记）；rev10：网关侧排队闸 v3（对话请求 FIFO 准入＋SSE 等待心跳）；另含 rev9 CPU 卡型号、rev8 后补的 `config-examples/` 样例、README 踩坑登记、真机截屏配图与省钱计算器口径＋价表随包；git 仓形态，无 ZIP）
+发行版本：`strata-ledger-proxy` 2026-11-09（本次修订 2026-11-17 · rev11：排队闸跟随引擎实际并发（`gate_follow` 开关＋后台 `/v1/status` 读数缓存＋回退链）；rev10a：排队闸 v3 维护小批（入队观测即时可见＋死字段注释＋票面勘误登记）；rev10：网关侧排队闸 v3（对话请求 FIFO 准入＋SSE 等待心跳）；另含 rev9 CPU 卡型号、rev8 后补的 `config-examples/` 样例、README 踩坑登记、真机截屏配图与省钱计算器口径＋价表随包；git 仓形态，无 ZIP）
 用途：给另一台机器（代号 5090）替换旧的「旁路边读引擎日志」账本链的**独立工具包**。
 运行要求：本机 Python 3.13 实测通过；3.8 未实测，静态检查未见 3.9+ 专有语法（内置泛型下标 `list[...]`、`X | Y` 联合类型、match 语句等均未使用）。主链仅标准库；`psutil` 与 `nvidia-smi` 为监控增强，缺失时自动降级。目标机若用更旧版本，请先跑 `bootstrap.py --selftest` 验证。
 
@@ -377,6 +377,20 @@
 | （仓外）`rev10-gate-v3-erratum.md` | E-1 勘误登记件落治理族 `D:\Strata\.workbuddy\collab\tickets\`：登记 rev10 票 ②-3 S-5 伪码（`_gate_beat` 未置 `responded = True`）与 S-8 声明矛盾；实现事实（81783d5 已置位）＝必要纠正；rev10 票本体 append-only 不回改 | 照票复建者须以登记件为准，勿照 S-5 字面省略 `responded = True`（否则违 RELAY CONTRACT §4 第二状态行） |
 
 **验收读数（票③七条）**：闭集 diff 外零文件；proxy **32/32**（31＋新 1）、monitor **54/54**、watchdog **16** 不变；`grep -c '^PASS  gate:'`＝10；`_push_gate` 实得 5 行＝def 1＋调用 4（新调用在 acquire 两段临界区之间·锁外）；死字段注释 grep 命中同行；红线机检 `grep -cE '(429|409)' collector_proxy.py` ＝ 0；勘误件在场含双锚点。
+
+### 2.21 rev11：排队闸跟随引擎实际并发——闸阈值从网关自填值改为上游引擎运行时读数（2026-11-17 · 功能改动 · 三套全绿）
+
+背景（票 `2026-11-17-ledger-gate-follow`，决策输入＝人类 21:08 裁定「网关不需要自己创造，就看 Strata 实际的启动配置就好了」〔INTK-0001〕＋20:56「按 2slot 守住关卡」裁定＋人类 21:18 补令「主要是测试第3路不会被误杀，一定有心跳机制通讯保活」）：rev10 的闸上限 `max_inflight` 是人在网关侧另填的数，与引擎运行时实际并发（显存 `fit_parallel` 降级、引擎自调 `batch_slots` 都会改它）存在两处填数漂移风险。本轮加开关 `gate_follow`（缺省 false＝与 `e791a75` 行为一致）：置 true 后闸的有效 limit 取引擎 `/v1/status` → `concurrency.serving` 运行时读数（后台 daemon 线程周期 GET、缓存于模块级单写元组，对话热路径只解引用缓存——零新增上游同步调用、零新增锁）。读数不可得按回退链：最后成功值（无限期）→ 静态 `max_inflight` 兜底 → 0 关闸；无「临时全通」档。**红线五条沿 rev10 加读数 GET 旁路**：无拒绝态；不触在飞（跟随下调不回收）；缺省零回归；热路径零新增打点/零新增锁；读数 GET 不经闸不进账本。**验收重心＝防误杀族**：满队列第 3 路流式请求经 `: ping` 心跳保活端到端拿到上游真实响应、全程不断连不误杀。
+
+| 文件 | 改动 | 为什么 |
+|---|---|---|
+| `collector_proxy.py` | F-1 `FOLLOW_DEFAULTS=(False,5.0)`；F-2 模块级 `_engine_reading=None` 单写元组缓存（唯一写者＝gate-follow 线程；整体重绑 GIL 原子；读侧无锁）；F-3 `_engine_status_fetch(cfg)`：`GET {upstream}/v1/status` 超时 5.0s，成功判据＝200＋JSON＋`concurrency.serving` 存在且 `int>=1`，任一不满足返回 None 不抛异常（鉴权与 `do_GET` 同口径）；F-4 `_follow_loop(cfg_path)` daemon 线程（挂 `main()` `reporter.start()` 后）：每轮 try 外先绑 `poll_s` 缺省值（D2 修·QA 探针B：首轮 config 异常不 NameError 线程死）＋函数体首行 `global _engine_reading`（D1 修·QA 探针A：缺 global 写被判局部→先读后写异常被自身 except 吞→跟随静默失效）＋poll_s 坏值钳缺省/下限钳 0.5s＋follow 假时零上游请求仅重读 config（改开关不重启）＋值变化记 `ledger-service.log` 一行＋读数失败缓存不动（回退链第一级）＋异常吞掉线程永不死；F-5 `_gate_params` limit 决定处：读得的 int 改名 `static_limit`，follow 真时 `limit = r[0] if r is not None else static_limit`，假走原路径；`_last_limit = limit` 照旧＝监视页 limit 动态化的全部所需（R-5 零改动链路）；F-6 acquire 内 limit＝进闸时刻快照（登记，代码不变）；F-7 回退链汇总 | 引擎改并发闸自动跟随，人不用两处填数；缓存单写读侧无锁＝热路径零新增锁（红线四）；回退无全通档＝不违 20:56 裁定 |
+| `config.template.json` | `gate_wait_s` 后新增 `"gate_follow": false, "gate_follow_poll_s": 5`；comment 追加跟随口径段（含兜底建议与缺省行为说明） | 缺省零回归从模板起 |
+| `selftest_proxy.py` | T-0 stub `do_GET` 新增 `/v1/status` 分支（`STATUS_MODE` good/broken＋`STATUS_SERVING`＋带锁 `GET_STATUS_HITS` 计数；既有 GET case 零改动）；T-2 跟随 5 断言（`gate:follow off by default never polls status` 缺省态 hits=0／`gate:follow boot fallback to static max_inflight` 读数不可得回退用静态 1 不用假引擎值 2／`gate:follow limit tracks engine serving` ext `gate.limit` 1→2 跟随引擎值（监视页动态化行为证）／`gate:follow last-good on status loss` 读数丢失后 ext limit 仍＝最后成功值 2 非静态 1／`gate:follow poll bypasses gate and records nothing` 闸满窗口内 hits 增长而账本行数增量 0）；T-4 防误杀 4 断言（v4 钉态：共用 cfg `gate_follow:false` 固定数值闸态＋stub 显式 good＋组首清 hits 基线——族验排队＋心跳闸本体语义，与 limit 来源正交）：`gate:3rd stream survives full queue with heartbeats`（第 3 路流式排队收 ≥2 帧带时间戳 `: ping`、首帧 ≤0.8s、单一状态行不断连、空位后收全 8 帧 SSE 真实响应、账本行 `queue_wait_ms>=400` 无 error）／`gate:in-flight pair rate unaffected by queued 3rd`（在飞两路各自完整收尾且耗时 ≤ 基线+1.0s）／`gate:queued drop after heartbeat releases slot clean`（排队中心跳期客户端强断：不 crash、在飞不受染、终态 inflight=0 queued=0 无幽灵占位、账本行如实在场）／`gate:3rd non-stream waits out gate_wait_s and forwards`（非流式静默排队等满照样 200 转发真实响应体不拒）；调参断言全部自恢复 cfg。既有 32 断言（22 基础＋10 gate 组）名称表达式 stub 行为逐字零改动。当次 41/41 | 八组红面逐条对应五红线与补令子项；防误杀族＝验收重心（人类 21:18 补令）；引用归组三条（heartbeat before slot / expiry forwards / no slot leak）零改动计入族 |
+| `README.md` | 第八节补「闸跟随引擎并发」用法口径（两键含义＋在岗建议 `gate_follow:true` 保留人类已裁值兜底＋改键即效）；第九节新增第 11、12、13 条边界（轮询时延＋进闸快照／下调瞬间在飞可超新 limit 不回收／回退次序含 fit_parallel 降级衔接句「跟随运行时值是 21:08 口径正常结果，非违 20:56」） | 边界不许粉饰；防后续读者误判跟随违背并发裁定 |
+| `MANIFEST.md` / `CHANGELOG.md` | 本节＋rev11 条目 | 登记 |
+
+**契约不变量核验**：`Gate` 类本体（`acquire`/`release`/`snapshot`/等待环/心跳路径）零改动——`git diff e791a75 -- collector_proxy.py | grep -cE '^[+-].*(def acquire|def release|def snapshot|self\._waiters|self\._cond|_gate_beat|_start_gate_chunked|_write_gate_hb)'` ＝ 0；`monitor_ext.py`/`monitor.js`/`monitor.html`/`monitor.css`/`selftest_monitor.py`/`ledger_watchdog.py`/`switch_proxy.py`/`selftest_watchdog.py` 零触碰；账本字段面零新增字段；`_pump`/`_start_chunked`/`do_GET` 转发本体/`_pass_post`/RELAY CONTRACT §1–4 零改动。热路径锁计数逐值不变：`threading.(Lock|RLock|Semaphore)`=1、`threading.Condition()`=1；`urlopen` 3→4（新点＝`_engine_status_fetch` 体内唯一新增）；红线一机检 `grep -cE '(429|409)'`＝0。三套回归当次：proxy 32→**41**、monitor **54/54**、watchdog **16 passed 0 failed**。**文件数不变**（无新增/删除文件）。**在岗动作属票后置**（`config.json` 加 `gate_follow:true` ＋换脑窗口由主理人另排，不在本票验收面）。
 
 
 ## 三、如实登记：代码分叉

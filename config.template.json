@@ -13,8 +13,10 @@
   "max_inflight": 0,
   "queue_beat_s": 10,
   "gate_wait_s": 600,
+  "gate_follow": false,
+  "gate_follow_poll_s": 5,
   "watchdog_interval_s": 5,
   "watchdog_relaunch_cooldown_s": 5,
   "key_labels": {},
-  "comment": "改这三项就能换机器：listen（团队接入端口）、upstream（引擎真实端口）、out_dir（账本数据目录）。改 listen 后看门狗与切换工具会自动跟随该端口，无需另改端口，也不用给它们传参。lock_port 是反代进程自己的防重复端口，watchdog_lock_port 是看门狗自己的防重复端口，两者必须不同；一般都不用改，要改时显式填本字段。路径支持 @here（本配置文件所在目录）、@pkg（本工具包目录）、~（用户主目录）、相对路径、绝对路径，Windows/Linux/macOS 通用；纯相对路径按本配置文件所在目录解析，不随当前工作目录漂移。key_labels 填『API key 指纹 -> 姓名』，用 python collector_proxy.py --fp <你的key> 算出 8 位指纹；不要把真实 key 写进本文件。监控页自带在 http://<主机>:<listen端口>/monitor（显卡按卡的唯一身份绑定，槽位号只展示），数据接口 /ext.json、/health 始终可用；web_root 字段已弃用——本工具不再往任何外部页面注入脚本，留着不报错，可直接删。collector_script 留空即使用本包内的 collector_proxy.py。排队闸：max_inflight=0 为缺省＝闸关闭，行为与升级前完全一致；>0 时仅对话请求（/v1/chat/completions、/v1/messages）限并发，超出进网关排队按序等待，绝不拒绝；排队超过 queue_beat_s 秒的流式请求会先收到网关心跳（: ping），槽位一空即接引擎真实流；等满 gate_wait_s 秒照样转发。改这三项保存 config 即可，无需重启，下一个对话请求即生效。其余路径（GET、/v1/models、stop/unload/images 等）永不经闸。"
+  "comment": "改这三项就能换机器：listen（团队接入端口）、upstream（引擎真实端口）、out_dir（账本数据目录）。改 listen 后看门狗与切换工具会自动跟随该端口，无需另改端口，也不用给它们传参。lock_port 是反代进程自己的防重复端口，watchdog_lock_port 是看门狗自己的防重复端口，两者必须不同；一般都不用改，要改时显式填本字段。路径支持 @here（本配置文件所在目录）、@pkg（本工具包目录）、~（用户主目录）、相对路径、绝对路径，Windows/Linux/macOS 通用；纯相对路径按本配置文件所在目录解析，不随当前工作目录漂移。key_labels 填『API key 指纹 -> 姓名』，用 python collector_proxy.py --fp <你的key> 算出 8 位指纹；不要把真实 key 写进本文件。监控页自带在 http://<主机>:<listen端口>/monitor（显卡按卡的唯一身份绑定，槽位号只展示），数据接口 /ext.json、/health 始终可用；web_root 字段已弃用——本工具不再往任何外部页面注入脚本，留着不报错，可直接删。collector_script 留空即使用本包内的 collector_proxy.py。排队闸：max_inflight=0 为缺省＝闸关闭，行为与升级前完全一致；>0 时仅对话请求（/v1/chat/completions、/v1/messages）限并发，超出进网关排队按序等待，绝不拒绝；排队超过 queue_beat_s 秒的流式请求会先收到网关心跳（: ping），槽位一空即接引擎真实流；等满 gate_wait_s 秒照样转发。改这三项保存 config 即可，无需重启，下一个对话请求即生效。其余路径（GET、/v1/models、stop/unload/images 等）永不经闸。gate_follow=true 时排队闸上限不再取 max_inflight，而是跟随 Strata 引擎运行时实际并发（网关后台周期 GET 上游 /v1/status 读 concurrency.serving，含显存降级后的真实槽数，引擎改并发闸自动跟随，无需重启）；读数暂不可得时先用最后一次成功读数，从未读到则退回 max_inflight 当兜底救援值（max_inflight 建议保持人类已裁并发数）。gate_follow_poll_s＝后台读数轮询秒数（缺省 5）。gate_follow 缺省 false＝行为与升级前完全一致。"
 }

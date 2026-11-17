@@ -44,6 +44,20 @@ KEY_WAIT = "sk-gate-wait-marker"       # stage-2 marker keys: ledger rows found 
 KEY_FAST = "sk-gate-fast-marker"
 KEY_WAIT_FP = hashlib.sha256(KEY_WAIT.encode()).hexdigest()[:8]
 KEY_FAST_FP = hashlib.sha256(KEY_FAST.encode()).hexdigest()[:8]
+KEY_3RD = "sk-gate-3rd-marker"         # rev11 T-4 A1: marker for the queued 3rd stream's ledger row
+KEY_3RD_FP = hashlib.sha256(KEY_3RD.encode()).hexdigest()[:8]
+KEY_3DROP = "sk-gate-3rd-drop-marker"  # rev11 T-4 A3: marker for the disconnected queued stream's row
+KEY_3DROP_FP = hashlib.sha256(KEY_3DROP.encode()).hexdigest()[:8]
+# ---- rev11 T-0 stub state: fake engine /v1/status (gate-follow reading source) ----
+STATUS_MODE = "good"                   # "good" -> 200 JSON concurrency.serving; "broken" -> 200 {} (unreadable)
+STATUS_SERVING = 2                     # serving/requested value served in "good" mode
+GET_STATUS_HITS = 0                    # /v1/status GET counter (module-level, lock-guarded)
+GET_STATUS_LOCK = threading.Lock()
+
+
+def status_hits():
+    with GET_STATUS_LOCK:
+        return GET_STATUS_HITS
 
 
 def rec(name, ok, detail=""):
@@ -165,6 +179,18 @@ class FakeUpstream(BaseHTTPRequestHandler):
 
     def do_GET(self):
         case = self._case(self.path)
+        # rev11 T-0: fake engine /v1/status for the gate-follow reader.
+        # Path minus query exactly == "/v1/status" -> answer from module-level
+        # mutable state and count the hit. Other GET cases keep old behaviour.
+        if urllib.parse.urlparse(self.path).path == "/v1/status":
+            with GET_STATUS_LOCK:
+                global GET_STATUS_HITS
+                GET_STATUS_HITS += 1
+            if STATUS_MODE == "good":
+                payload = {"concurrency": {"serving": STATUS_SERVING,
+                                           "requested": STATUS_SERVING}}
+                return self._fixed(200, json.dumps(payload).encode())
+            return self._fixed(200, b"{}")          # field absent = reading unavailable
         if case == "401":
             return self._fixed(401, b'{"error":"need key"}')
         if case == "gzip":
@@ -257,9 +283,51 @@ def wait_gate(pred, timeout=10):
     return g
 
 
+def gate_touch():
+    """Local /health GET = a snapshot push point (same route rev10's probes use)."""
+    c = conn()
+    try:
+        c.request("GET", "/health")
+        c.getresponse().read()
+    except Exception:
+        pass
+    c.close()
+
+
+def wait_gate_fresh(pred, timeout=10, touch_every=1.0):
+    """rev11 variant: /ext.json's gate section is freshness-gated (push older
+    than 30s = field absent, monitor_ext contract). When a raw streaming
+    request holds the wire past that window, the snapshot goes absent mid-test;
+    this polls with a periodic local /health push to keep the pushed state
+    fresh, so queued/inflight readings stay observable during long streams.
+    Same pred contract; returns the satisfying gate dict or the last reading."""
+    end = time.monotonic() + timeout
+    g = None
+    last_touch = time.monotonic()
+    while time.monotonic() < end:
+        g = read_ext().get("gate")
+        if g is not None and pred(g):
+            return g
+        if time.monotonic() - last_touch >= touch_every:
+            gate_touch()
+            last_touch = time.monotonic()
+        time.sleep(0.1)
+    return g
+
+
 def seen_holds():
     with SEEN_LOCK:
         return [s for s in SEEN if s.get("hold")]
+
+
+def find_row(tmp, fp, timeout=3.0):
+    """Poll the day ledger for the row written under key fingerprint fp."""
+    end = time.monotonic() + timeout
+    while True:
+        row = next((x for x in ledger(tmp) if x.get("fp") == fp), None)
+        if row is not None or time.monotonic() >= end:
+            return row
+        time.sleep(0.1)
 
 
 def start_hold(tag, results):
@@ -292,7 +360,126 @@ def pin_slot(tag, held):
     return t
 
 
+def hold_extra(tag, held):
+    """Occupy one MORE slot while another hold is already in flight (limit>=2).
+    pin_slot's clean-gate wait would spin to its timeout by design here, so
+    additional pins use this: fire a hold, return once it reached upstream,
+    then settle /ext.json until the gate snapshot shows the new inflight —
+    without that settle the NEXT request reads a stale snapshot on the server
+    side too? No: the gate state itself is already incremented, but the push
+    only rides request events; the settle exists so queued-state assertions in
+    later code observe a consistent snapshot (the real race fixed here is the
+    test's own wait_gate baseline going stale between pin and next fire)."""
+    before = len(seen_holds())
+    t = start_hold(tag, held)
+    end = time.monotonic() + 10
+    while time.monotonic() < end:
+        if len(seen_holds()) > before:
+            break
+        time.sleep(0.05)
+    return t
+
+
+def settle_gate_inflight(n, timeout=3.0):
+    """Block until /ext.json gate.inflight >= n (the pin is gate-visible)."""
+    return wait_gate(lambda g: (g.get("inflight") or 0) >= n, timeout=timeout) is not None
+
+
+def read_http_chunks(sock, t0, pings):
+    """Consume ONE HTTP/1.1 chunk-framed response from a raw socket (rev11 T-4).
+    `pings` is a SHARED list: every `: ping` comment-chunk arrival appends its
+    monotonic offset (sec, from t0) immediately, so the test side can react to
+    heartbeats while the stream is still running (keep-alive proof stream).
+    stats: raw bytes, head, status_lines, data_frames, done([DONE]),
+    terminal_zero(final 0-chunk = clean stream end), reset, timeout."""
+    st = {"raw": b"", "head": b"", "status_lines": 0, "data_frames": 0,
+          "done": False, "terminal_zero": False, "reset": False, "timeout": False}
+    buf = b""
+    head_done = False
+    while True:
+        try:
+            b = sock.recv(65536)
+        except socket.timeout:
+            st["timeout"] = True
+            break
+        except ConnectionResetError:
+            st["reset"] = True
+            break
+        except OSError:
+            break
+        if not b:
+            break
+        now = time.monotonic() - t0
+        st["raw"] += b
+        buf += b
+        if not head_done:
+            sep = buf.find(b"\r\n\r\n")
+            if sep == -1:
+                continue
+            st["head"] = buf[:sep]
+            st["status_lines"] = st["head"].count(b"HTTP/1.1 ")
+            buf = buf[sep + 4:]
+            head_done = True
+        while True:
+            sep = buf.find(b"\r\n")
+            if sep == -1:
+                break
+            try:
+                size = int(buf[:sep].split(b";", 1)[0].strip(), 16)
+            except ValueError:
+                break
+            if size == 0:
+                st["terminal_zero"] = True
+                break
+            if len(buf) < sep + 2 + size + 2:
+                break
+            payload = buf[sep + 2:sep + 2 + size]
+            buf = buf[sep + 2 + size + 2:]
+            # count OCCURRENCES inside payload, not payload count: TCP may
+            # coalesce two flushed frames into one read — same tally rev10
+            # used (full.count(b"data: ")), just timestamped per arrival.
+            np_ = payload.count(b": ping")
+            if np_:
+                pings.extend([now] * np_)
+            st["data_frames"] += payload.count(b"data: ")
+            if b"[DONE]" in payload:
+                st["done"] = True
+        if st["terminal_zero"]:
+            break
+    return st
+
+
+def fire_raw_stream(path, body_obj, auth_key, stats_box):
+    """Raw-socket streaming chat POST (rev11 T-4). The reader thread fills
+    stats_box["st"]/["pings"]; stats_box["sock"] exposes the live socket so the
+    test side can force a client-side disconnect mid-heartbeat (A3)."""
+    def run():
+        t0 = time.monotonic()
+        try:
+            s = socket.create_connection(("127.0.0.1", PX_PORT), timeout=20)
+        except OSError as e:
+            stats_box["st"] = {"connect_err": str(e)}
+            return
+        stats_box["sock"] = s
+        pings = stats_box.setdefault("pings", [])    # shared live list (GIL-atomic appends)
+        bj = json.dumps(body_obj).encode()
+        s.sendall(("POST %s HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer %s\r\n"
+                   "Content-Type: application/json\r\nContent-Length: %d\r\n"
+                   "Connection: close\r\n\r\n" % (path, auth_key, len(bj))).encode() + bj)
+        st = read_http_chunks(s, t0, pings)
+        stats_box["st"] = st
+        stats_box["elapsed"] = time.monotonic() - t0
+        try:
+            s.close()
+        except OSError:
+            pass
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    return t
+
+
 def main():
+    global STATUS_MODE, STATUS_SERVING, GET_STATUS_HITS
     tmp = tempfile.mkdtemp(prefix="proxy-selftest-")
     os.makedirs(os.path.join(tmp, "web"), exist_ok=True)
     cfg = {"name": "selftest", "mode": "proxy", "out_dir": tmp,
@@ -513,6 +700,13 @@ def main():
         ext1 = read_ext()
         rec("gate:default no gate section in ext.json", "gate" not in ext1,
             "gate=%s keys=%s" % (ext1.get("gate"), sorted(ext1)[:6]))
+
+        # 16b. rev11 T-2 (1) 判据③-4: default cfg (NO gate_follow key) -> the
+        #      gate-follow thread polls nothing. Stub-side counter is the proof:
+        #      zero /v1/status GETs across the whole default stage.
+        hits_default = status_hits()
+        rec("gate:follow off by default never polls status", hits_default == 0,
+            "hits=%d (default cfg has no gate_follow key; stub counter; urlopen side-evidence: grep -c urlopen = 4 in collector_proxy.py)" % hits_default)
 
         # ================= T-2 stage two: gate ON (small test values, never
         # production defaults). Same cfg path, same lock_port, same ports.
@@ -801,6 +995,393 @@ def main():
             % (q_seen, "%0.2f" % t_seen if t_seen is not None else "never", BEAT_T2))
         with open(cfg_path, "w", encoding="utf-8") as f:   # restore gate-stage cfg (per-request re-read)
             json.dump(cfg2, f)
+
+        # ================================================================
+        # rev11 T-2 follow-assertion group. All run inside the gate-ON stage
+        # using rev10's per-request config re-read (cfg edits need no restart).
+        # Each parameterising assertion restores cfg on exit (rev10a lesson).
+        # ================================================================
+        # ---- T-2 (2) 判据③-5: boot fallback to static max_inflight -------
+        # follow ON but stub serves an UNREADABLE status (broken) AND a serving
+        # value (2) deliberately DIFFERENT from the static fallback (1). The
+        # effective limit must fall back to static 1 -> a 2nd request queues.
+        STATUS_MODE = "broken"; STATUS_SERVING = 2   # stub pinned BEFORE the switch flips
+        cfgf = dict(cfg2)                            # gate_wait_s stays at the stage's 1.0
+        cfgf["max_inflight"] = 1
+        cfgf["gate_follow"] = True
+        cfgf["gate_follow_poll_s"] = 0.5
+        with open(cfg_path, "w", encoding="utf-8") as f:
+            json.dump(cfgf, f)
+        held = {}
+        tA = pin_slot("bootfb", held)               # occupies the (fallback) single slot
+        res_fb = {}
+        def second_fb():
+            try:
+                cc = post("/v1/chat/completions?case=json", {"model": "m"})
+                rr = cc.getresponse()
+                res_fb["status"] = rr.status
+                res_fb["body"] = rr.read()
+                cc.close()
+            except Exception as e:
+                res_fb["err"] = str(e)
+        t_fb0 = time.monotonic()
+        tB = threading.Thread(target=second_fb); tB.start()
+        # Discriminator: fallback used static 1 -> the 2nd QUEUES (waits, only
+        # expiry-forwards at gate_wait_s=1.0). It must still be waiting at
+        # 0.65s (wrong fallback 2 would fast-path it done in ~0.05s).
+        remain = 0.65 - (time.monotonic() - t_fb0)
+        if remain > 0:
+            time.sleep(remain)
+        still_queued = tB.is_alive()                # not released inside the gate_wait_s window
+        q_fb = (read_ext().get("gate") or {}).get("queued") or 0   # supplementary ext read
+        #                                      (sampler-merged, may lag ~2.5s; the
+        #                                      liveness reading above is the primary)
+        HOLD_GATE.set()
+        tB.join(timeout=10); tA.join(timeout=10)
+        rec("gate:follow boot fallback to static max_inflight",
+            still_queued,
+            "2nd still waiting at 0.65s (gate_wait_s=1.0 stage value; fast-path would be done by now): %s; ext queued read=%s; static_fallback=1 stub_serving_fake=2 (broken status)"
+            % (still_queued, q_fb))
+        # cfgf STAYS for assertions (3)-(5) (same cfg per ticket); restored once at group end.
+
+        # ---- T-2 (3) 判据③-5/③-9: limit tracks engine serving -------------
+        # Same follow-ON cfg, but gate_wait_s raised to 8.0 so the queued 2nd
+        # request stays queued while the 3rd fast-paths in on the new engine
+        # value (static max_inflight stays 1; the future engine value is 2 ->
+        # discriminating). Stub good/serving=1: the reader thread must wake and
+        # poll; then serving flips to 2 and a third request must see limit 2
+        # (ext gate.limit 1->2 = the monitor-page dynamisation behaviour proof).
+        cfgf3 = dict(cfgf)
+        cfgf3["gate_wait_s"] = 8.0
+        with open(cfg_path, "w", encoding="utf-8") as f:
+            json.dump(cfgf3, f)
+        STATUS_MODE = "good"; STATUS_SERVING = 1
+        h0_follow = status_hits()
+        hpoll = None
+        endp = time.monotonic() + 8.0        # stage-1 thread slept at default 5s: allow one full cycle
+        while time.monotonic() < endp:
+            if status_hits() > h0_follow:
+                hpoll = status_hits()
+                break
+            time.sleep(0.05)
+        held = {}
+        tA = pin_slot("tracks1", held)                # slot pinned (limit=1 either way)
+        res_tr2 = {}
+        def second_tr():
+            try:
+                cc = post("/v1/chat/completions?case=json", {"model": "m"})
+                rr = cc.getresponse()
+                res_tr2["status"] = rr.status
+                res_tr2["body"] = rr.read()
+                cc.close()
+            except Exception as e:
+                res_tr2["err"] = str(e)
+        tB = threading.Thread(target=second_tr); tB.start()
+        g_q1 = wait_gate_fresh(lambda g: (g.get("queued") or 0) >= 1, timeout=6.0)
+        lim1 = (g_q1 or {}).get("limit")
+        STATUS_SERVING = 2
+        h1_flip = status_hits()
+        hpoll2 = None
+        endp2 = time.monotonic() + 3.0                 # poll_s=0.5 -> two cycles fit easily
+        while time.monotonic() < endp2:
+            if status_hits() >= h1_flip + 2:
+                hpoll2 = status_hits()
+                break
+            time.sleep(0.05)
+        time.sleep(0.15)                               # settle margin: the last in-flight GET
+        #                                      response must be parsed into _engine_reading
+        res_tr3 = {}
+        def third_tr():
+            try:
+                cc = post("/v1/chat/completions?case=json", {"model": "m"})
+                rr = cc.getresponse()
+                res_tr3["status"] = rr.status
+                res_tr3["body"] = rr.read()
+                cc.close()
+            except Exception as e:
+                res_tr3["err"] = str(e)
+        tC = threading.Thread(target=third_tr); tC.start()
+        g_tr = wait_gate(lambda g: g.get("limit") == 2, timeout=3.0)  # ext limit FOLLOWED engine 1->2
+        lim2 = (g_tr or {}).get("limit")
+        tC.join(timeout=15)                            # 3rd: real 200 (never refused)
+        HOLD_GATE.set()                                # release the pinned hold
+        tB.join(timeout=15); tA.join(timeout=15)
+        want_tr = json.dumps(USAGE_TAIL).encode()
+        rec("gate:follow limit tracks engine serving",
+            hpoll is not None and hpoll2 is not None and lim1 == 1 and lim2 == 2
+            and res_tr3.get("status") == 200 and res_tr3.get("body") == want_tr
+            and res_tr2.get("status") == 200 and res_tr2.get("body") == want_tr,
+            "hits %d->%d->%s (poll cycles) limit 1\u21922 (ext gate.limit=%s\u2192%s) 3rd status=%s 2nd status=%s"
+            % (h0_follow, h1_flip, hpoll2, lim1, lim2, res_tr3.get("status"), res_tr2.get("status")))
+
+        # ---- T-2 (4) 判据③-8: last-good value survives status loss ---------
+        # _engine_reading=(2,...) carried over. Stub goes broken again; after
+        # >=2 poll cycles the effective limit must STILL be the last good 2,
+        # NOT the static fallback 1 (v3 discriminating read: ext gate.limit==2;
+        # without it both states would show queued>=1 and could read false-green).
+        STATUS_MODE = "broken"
+        time.sleep(1.0)                                # >=2 poll cycles (poll_s=0.5)
+        g_lg0 = read_ext().get("gate") or {}
+        lim_lg0 = g_lg0.get("limit")
+        held = {}
+        tA = pin_slot("lg1", held)                     # last-good 2 -> two slots fillable
+        infl_lg1 = (read_ext().get("gate") or {}).get("inflight")
+        tB = hold_extra("lg2", held)
+        settle_gate_inflight(2)
+        infl_lg2 = (read_ext().get("gate") or {}).get("inflight")
+        res_lg3 = {}
+        t_lg3_start = time.monotonic()
+        def third_lg():
+            try:
+                cc = post("/v1/chat/completions?case=json", {"model": "m"})
+                rr = cc.getresponse()
+                res_lg3["status"] = rr.status
+                res_lg3["body"] = rr.read()
+                cc.close()
+            except Exception as e:
+                res_lg3["err"] = str(e)
+        tC = threading.Thread(target=third_lg); tC.start()
+        # ext queued read widened for the sampler tick (~2.3s observed); the
+        # primary discriminator is unchanged: liveness at >=0.65s into the wait
+        # (gate_wait_s here is 8.0 via cfgf3, so expiry-forward is excluded).
+        g_lgq = wait_gate_fresh(lambda g: (g.get("queued") or 0) >= 1, timeout=6.0)
+        q_lg = (g_lgq or {}).get("queued") or 0
+        early = 0.65 - (time.monotonic() - t_lg3_start)
+        if early > 0:
+            time.sleep(early)
+        not_fast = tC.is_alive()                       # queued, NOT fast-pathed (no "all-open" fallback)
+        t_queued_elapsed = time.monotonic() - t_lg3_start
+        # post-pin ext read: every gate request pushes _last_limit, so this is
+        # the discriminating reading (last-good -> 2 vs a cache-dropping bug
+        # that falls back to static 1 would show 1 here and queue pin#2).
+        lim_lg_post = (read_ext().get("gate") or {}).get("limit")
+        HOLD_GATE.set()                                # one set wakes both waiting holds; drain all
+        tA.join(timeout=15); tB.join(timeout=15); tC.join(timeout=15)
+        HOLD_GATE.clear()                              # two waiters release on the first set; the
+        #                                      redundant second set must not leak into later pins
+        want_lg = json.dumps(USAGE_TAIL).encode()
+        rec("gate:follow last-good on status loss",
+            lim_lg0 == 2 and lim_lg_post == 2 and q_lg >= 1 and not_fast
+            and res_lg3.get("status") == 200 and res_lg3.get("body") == want_lg
+            and held.get("lg1", (None,))[0] == 200 and held.get("lg2", (None,))[0] == 200,
+            "ext gate.limit=%s (pre-pin) / %s (post-pin; last-good 2 vs static fallback 1) 3rd queued=%s not_fast_within_0.6s=%s elapsed=%0.2fs final status=%s holds=%s,%s"
+            % (lim_lg0, lim_lg_post, q_lg, not_fast, t_queued_elapsed, res_lg3.get("status"),
+               held.get("lg1", (None,))[0], held.get("lg2", (None,))[0]))
+        # ---- T-2 (5) 判据③-11: poll bypasses the gate, records nothing ------
+        # Gate full with a queued chat request; the follow thread keeps polling
+        # (hits grow) yet the queue never drains and the ledger gains nothing:
+        # the status GET never passes the gate nor writes a ledger row.
+        # gate_wait_s is raised to 8.0 (cfgf3) so the queued request stays
+        # queued for the whole >=1.2s two-sample window (no expiry-forward).
+        held = {}
+        tA = pin_slot("byp1", held)
+        tB = hold_extra("byp2", held)
+        res_byp = {}
+        def queued_byp():
+            try:
+                cc = post("/v1/chat/completions?case=json", {"model": "m"})
+                rr = cc.getresponse()
+                res_byp["status"] = rr.status
+                rr.read(); cc.close()
+            except Exception as e:
+                res_byp["err"] = str(e)
+        tC = threading.Thread(target=queued_byp); tC.start()
+        wait_gate_fresh(lambda g: (g.get("queued") or 0) >= 1, timeout=6.0)
+        hits_a, rows_a = status_hits(), len(ledger(tmp))
+        time.sleep(1.2)                                # >=2 poll cycles while gate stays full
+        hits_b, rows_b = status_hits(), len(ledger(tmp))
+        still_queued_byp = tC.is_alive()               # polling never opened the gate
+        HOLD_GATE.set(); HOLD_GATE.set()
+        tC.join(timeout=15); tA.join(timeout=15); tB.join(timeout=15)
+        HOLD_GATE.clear()                            # defensive re-arm: never leave the flag set
+        #                                      for the next group's pins (one set can wake both stubs)
+        rec("gate:follow poll bypasses gate and records nothing",
+            hits_b > hits_a and rows_b == rows_a and still_queued_byp,
+            "hits %d->%d (gate full, queue stays blocked) ledger_rows %d->%d (delta 0 == completed chat requests 0 in window; queued 3rd still pending: alive=%s; chat requests completed in window=0)"
+            % (hits_a, hits_b, rows_a, rows_b, still_queued_byp))
+        with open(cfg_path, "w", encoding="utf-8") as f:   # restore gate-stage cfg (T-3 self-restore)
+            json.dump(cfg2, f)
+
+        # ================================================================
+        # rev11 T-4 anti-misjudge group (验收重心·人类 21:18 补令「第 3 路不会被
+        # 误杀，一定有心跳机制通讯保活」). Shared cfg pinned per v4: gate_follow
+        # false (fixed-value gate — this family tests queueing + heartbeat,
+        # orthogonal to where limit comes from; mixed follow×queue state is
+        # carried by T-2 (3) + the Gate-zero-change freeze), max_inflight 2
+        # (= on-duty engine parallel), queue_beat_s 0.4, gate_wait_s 8.0.
+        # Stub stays "broken" from T-2 (5) — with follow off it is never polled.
+        # ================================================================
+        cfgt = dict(cfg2)
+        cfgt["gate_follow"] = False
+        cfgt["max_inflight"] = 2
+        cfgt["queue_beat_s"] = 0.4
+        cfgt["gate_wait_s"] = 8.0
+        with open(cfg_path, "w", encoding="utf-8") as f:
+            json.dump(cfgt, f)
+        STATUS_MODE = "good"; STATUS_SERVING = 2     # v4 pinned stub state (explicit)
+        time.sleep(1.2)                              # >=2 cycles: the thread must have RE-read
+        #                                      cfgt (follow off) before the baseline is pinned,
+        #                                      so a follow:true-era in-flight poll can't race it
+        t4_hits0 = status_hits()                     # v4 group-head hits baseline
+
+        # ---- T-4 A1 判据③-13: 3rd stream survives a full queue, heartbeats ----
+        held = {}
+        tA = pin_slot("a1h1", held)
+        tB = hold_extra("a1h2", held)                # both slots pinned (limit=2)
+        box = {}
+        tR = fire_raw_stream("/v1/chat/completions?case=sse",
+                             {"model": "m", "stream": True}, KEY_3RD, box)
+        gq = wait_gate(lambda g: (g.get("queued") or 0) >= 1, timeout=3.0)
+        endp = time.monotonic() + 3.0                # receive >=2 : ping frames BEFORE releasing
+        while time.monotonic() < endp:               # (>=1 full beat waited => queue_wait_ms >= 400)
+            if len(box.get("pings") or []) >= 2:
+                break
+            time.sleep(0.05)
+        HOLD_GATE.set()                              # one set wakes both stubs; the slot frees
+        #                                      -> 3rd gets the REAL stream (Event self-clears)
+        tR.join(timeout=25)
+        tA.join(timeout=15); tB.join(timeout=15)
+        HOLD_GATE.clear()                            # defensive re-arm for the next group's pins
+        st1 = box.get("st") or {}
+        tp = box.get("pings") or []
+        first_ok = bool(tp) and tp[0] <= 0.8         # first frame <= queue_beat_s(0.4)+0.4 tol
+        gaps_ok = all(tp[i] - tp[i - 1] <= 0.8 for i in range(1, len(tp)))
+        raw1 = st1.get("raw") or b""
+        row1 = find_row(tmp, KEY_3RD_FP, timeout=8.0)
+        rec("gate:3rd stream survives full queue with heartbeats",
+            len(tp) >= 2 and first_ok and gaps_ok
+            and st1.get("status_lines") == 1 and not st1.get("reset") and st1.get("terminal_zero")
+            and b"HTTP/1.1 429" not in raw1 and b"HTTP/1.1 409" not in raw1 and b"HTTP/1.1 502" not in raw1
+            and st1.get("data_frames") == 8 and st1.get("done")
+            and row1 is not None and row1.get("queue_wait_ms", -1) >= 400 and "error" not in row1,
+            "t_pings=[%s] first_ping=%ss (<=0.8) data_frames=%s DONE=%s status_lines=%s refused(429/409/502)=%s queue_wait_ms=%s row_error=%s queued_first=%s"
+            % (",".join("%0.2f" % x for x in tp), ("%0.2f" % tp[0]) if tp else "never",
+               st1.get("data_frames"), st1.get("done"), st1.get("status_lines"),
+               any(s in raw1 for s in (b"HTTP/1.1 429", b"HTTP/1.1 409", b"HTTP/1.1 502")),
+               row1.get("queue_wait_ms") if row1 else None,
+               "error" in (row1 or {}), (gq or {}).get("queued")))
+
+        # ---- T-4 A2 判据③-14: in-flight pair rate unaffected by queued 3rd ----
+        box0 = {}
+        t0_ = fire_raw_stream("/v1/chat/completions?case=sse",
+                              {"model": "m", "stream": True}, KEY, box0)
+        t0_.join(timeout=25)
+        t_base = box0.get("elapsed") or 0.0          # uncontended single stream baseline
+        bA, bB = {}, {}
+        tA = fire_raw_stream("/v1/chat/completions?case=sse",
+                             {"model": "m", "stream": True, "i": 1}, KEY, bA)
+        tB = fire_raw_stream("/v1/chat/completions?case=sse",
+                             {"model": "m", "stream": True, "i": 2}, KEY, bB)
+        # Both streams run ~1.2s (6x0.2s frames + tail). The /ext.json inflight
+        # reading lags the sampler tick (~1-2.3s) so it cannot gate the 3rd's
+        # firing — timing does: at 0.35s both are verifiably in the gate
+        # (limit=2, streams not finished until ~1.2s), so the 3rd must queue.
+        time.sleep(0.35)
+        boxC = {}
+        tC = fire_raw_stream("/v1/chat/completions?case=sse",
+                             {"model": "m", "stream": True, "i": 3}, KEY, boxC)
+        endp = time.monotonic() + 3.0                # 3rd queued >= 1 live heartbeat
+        while time.monotonic() < endp:
+            if len(boxC.get("pings") or []) >= 1:
+                break
+            time.sleep(0.05)
+        queued_pings_c = len(boxC.get("pings") or [])
+        for t in (tA, tB, tC):
+            t.join(timeout=25)                       # in-flight finish -> slot hands over -> 3rd runs
+        stA, stB, stC = bA.get("st") or {}, bB.get("st") or {}, boxC.get("st") or {}
+        eA, eB = bA.get("elapsed") or 99.0, bB.get("elapsed") or 99.0
+        rec("gate:in-flight pair rate unaffected by queued 3rd",
+            stA.get("data_frames") == 8 and stA.get("done")
+            and stB.get("data_frames") == 8 and stB.get("done")
+            and eA <= t_base + 1.0 and eB <= t_base + 1.0
+            and (stC.get("head") or b"").startswith(b"HTTP/1.1 200") and stC.get("data_frames") == 8
+            and stC.get("done") and queued_pings_c >= 1,
+            "t_base=%0.2fs in-flight elapsed=%0.2fs,%0.2fs (each <= t_base+1.0) 3rd heartbeat frames while queued=%s (live : ping => queued behind the pair) final_3rd_head=%r 3rd data_frames=%s DONE=%s"
+            % (t_base, eA, eB, queued_pings_c,
+               (stC.get("head") or b"")[:14], stC.get("data_frames"), stC.get("done")))
+
+        # ---- T-4 A3 判据③-15: queued client drops mid-heartbeat -> slot clean ----
+        held = {}
+        tA = pin_slot("a3h1", held)
+        tB = hold_extra("a3h2", held)
+        box = {}
+        tR = fire_raw_stream("/v1/chat/completions?case=sse",
+                             {"model": "m", "stream": True}, KEY_3DROP, box)
+        endp = time.monotonic() + 3.0
+        while time.monotonic() < endp:               # >=1 heartbeat frame arrives first
+            if len(box.get("pings") or []) >= 1:
+                break
+            time.sleep(0.05)
+        pings_at_drop = len(box.get("pings") or [])
+        s_drop = box.get("sock")
+        try:                                         # forceful client-side disconnect
+            s_drop.shutdown(socket.SHUT_RDWR)        # unblock the reader's pending recv first
+        except OSError:
+            pass
+        try:
+            s_drop.close()
+        except OSError:
+            pass
+        tR.join(timeout=10)                          # the drop must not crash anything
+        HOLD_GATE.set()                              # one set wakes both waiting stubs: the two
+        #                                      holds proceed as normal (flag self-clears on wake)
+        tA.join(timeout=15); tB.join(timeout=15)
+        HOLD_GATE.clear()                            # defensive re-arm before the next group's pins
+        g_fin = wait_gate_fresh(lambda g: (g.get("inflight") or 0) == 0 and (g.get("queued") or 0) == 0,
+                                timeout=6.0)          # no ghost slot (window widened for the
+        #                                      sampler tick; pushes ride the drain's acquire/release)
+        rowd = find_row(tmp, KEY_3DROP_FP, timeout=8.0)
+        rec("gate:queued drop after heartbeat releases slot clean",
+            pings_at_drop >= 1
+            and held.get("a3h1", (None,))[0] == 200 and held.get("a3h2", (None,))[0] == 200
+            and g_fin is not None and g_fin.get("inflight") == 0 and g_fin.get("queued") == 0
+            and rowd is not None,                    # its ledger row lands (honestly recorded)
+            "pings_at_drop=%s holds_status=%s,%s final inflight=%s queued=%s dropped_row_present=%s (error_field=%s)"
+            % (pings_at_drop, held.get("a3h1", (None,))[0], held.get("a3h2", (None,))[0],
+               (g_fin or {}).get("inflight"), (g_fin or {}).get("queued"),
+               rowd is not None, (rowd or {}).get("error")))
+
+        # ---- T-4 A4 判据③-16: 3rd non-stream waits out gate_wait_s, forwarded ----
+        # Full-queue silence is a protocol property (README §9 item 10) — bytes
+        # are not asserted between beats. To keep the suite quick this assertion
+        # alone lowers gate_wait_s to 1.0 (self-restores to 8.0 right after).
+        cfgt4 = dict(cfgt)
+        cfgt4["gate_wait_s"] = 1.0
+        with open(cfg_path, "w", encoding="utf-8") as f:
+            json.dump(cfgt4, f)
+        held = {}
+        tA = pin_slot("a4h1", held)
+        tB = hold_extra("a4h2", held)                # both slots pinned, holds never released
+        t0 = time.monotonic()
+        c = post("/v1/chat/completions?case=json", {"model": "m"})
+        res4 = {}
+        def read4():
+            try:
+                r4 = c.getresponse()
+                res4["status"] = r4.status
+                res4["body"] = r4.read()
+            except Exception as e:
+                res4["err"] = str(e)
+        tR4 = threading.Thread(target=read4, daemon=True)
+        tR4.start()
+        time.sleep(0.6)                              # observation: NOT forwarded early
+        no_early_forward = not res4                  # while both slots held: still inside the queue
+        tR4.join(timeout=15)
+        body4 = res4.get("body")
+        waited4 = time.monotonic() - t0              # waited ~gate_wait_s=1.0, then forwarded
+        HOLD_GATE.set()                              # drain the holds (one set wakes both stubs)
+        tA.join(timeout=15); tB.join(timeout=15)
+        rec("gate:3rd non-stream waits out gate_wait_s and forwards",
+            waited4 >= 0.9 and res4.get("status") == 200 and res4.get("status") not in (429, 409, 502)
+            and body4 == json.dumps(USAGE_TAIL).encode(),
+            "waited=%0.2fs (gate_wait_s lowered to 1.0 for this assertion only, then restored) no_early_forward(0.6s mark)=%s final status=%s refused=%s body==real upstream response=%s"
+            % (waited4, no_early_forward, res4.get("status"), res4.get("status") in (429, 409, 502),
+               body4 == json.dumps(USAGE_TAIL).encode()))
+        with open(cfg_path, "w", encoding="utf-8") as f:   # T-4 group-end self-restore (rev10a discipline)
+            json.dump(cfg2, f)
+        t4_hits1 = status_hits()                     # whole family ran with follow OFF: zero new polls
+        # sanity detail line for the v4 pinned-state (non-asserting observation)
+        assert t4_hits1 == t4_hits0, "T-4 family must not poll /v1/status (gate_follow false)"
 
         bad = [n for n, ok, _ in RESULTS if not ok]
         print("\n%d/%d PASS" % (len(RESULTS) - len(bad), len(RESULTS)))
