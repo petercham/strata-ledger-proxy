@@ -1,0 +1,59 @@
+PASS  18-field CSV parses into 2 cards  rows=2
+PASS  uuid / index / name / mode correct  a=WDDM b=TCC
+PASS  mem/enc/dec util fields present and parsed  a=30.0/0.0/12.0
+PASS  legacy fields untouched (util/temp/power/clocks/mem)
+PASS  N/A counters become None, not crashes
+PASS  4 per-card PCIe link fields parsed (pcie_gen/width + _max)  a=1.0/8.0@4.0/16.0
+PASS  link fields are neutral data (no alarm semantics in the parser)
+PASS  rows with <18 columns are dropped  got=[]
+PASS  14-column rows (missing the 4 PCIe fields) are dropped  got=[]
+PASS  comma in card name parsed via csv module  rows=1
+PASS  missing UUID falls back to name-based identity  uuid=name:Solo Card
+PASS  index 0/1 swapped but uuid set identical (history cannot cross cards)
+PASS  dmon -s t parsed: last full-window sample wins per index  got={0: (1168.0, 1.0), 1: (0.0, 0.0)}
+PASS  dmon garbage/N-A lines skipped, empty output -> {}
+PASS  attach()/pages()/Watcher removed
+PASS  GPU_QUERY asks for the 4 new fields (driver-valid names)
+PASS  GPU_QUERY asks for the 4 PCIe link fields; GPU_FIELDS == 18
+PASS  /monitor serves our self-owned fused page  len=6976
+PASS  /monitor.js serves uuid-bound script  len=42191
+PASS  /monitor.css served as text/css with the ported st-* tokens  len=13286
+PASS  /monitor-sprite.svg served as svg with the icons we reference  len=8981
+PASS  page references no official assets (no web/sprite.svg, no app.css)
+PASS  js reads the official localStorage key for the engine key
+PASS  js draws ONE PCIe card, lead-line only (rev5): big number = lead card's instant MB/s, sub = 当前最高读速 + colour swatch + card name
+PASS  PCIe standalone legend area removed (no legend rows in js, no legend:true opt passed, legend container stays empty)
+PASS  disk/net subs render via innerHTML (their lines embed mx-sw legend HTML; setSub/textContent would show tags literally)
+PASS  no degradation alarm machinery anywhere in js/css (mx-badge--danger / degraded / badgeSlot / mx-bdg all absent)
+PASS  mx-sw legend glyph is a 10x3 short stroke, not an 8x8 square
+PASS  display-rule baseline (host hotfix, do-not-regress): mode badge rides the big number, no '% SM', icon via opts.icon
+PASS  display-rule baseline (host hotfix rev7c, do-not-regress): gpu card title = muted #index+1 (1-based, same style as disk) before the short name; old 0-based #index form never comes back
+PASS  incident guard: undefined-constant references SPEED_DECODE/SPEED_PREFILL must never appear in js (ReferenceError killed the whole page once)
+PASS  incident fix in place: swc() helper defined; speed legend uses it; css carries .mx-sw--decode / .mx-sw--prefill in theme vars
+PASS  speed card legend shape (host hotfix): subD/subP innerHTML start with swc decode/prefill glyphs
+PASS  display-rule baseline (host hotfix rev6, do-not-regress): disk big number = value + <small>unit</small> + spec badge (bus minus "Disk N · " prefix); title head starts #number+1 (human 1-based)
+PASS  display-rule baseline (host hotfix rev6b, do-not-regress): wifi adapter is titled 无线网卡 with NO kind badge; wired = real adapter name + 有线 badge; NET_KIND_LABEL / WLAN gone for good
+PASS  cpu card branch shapes locked: single-socket path keeps the old form + optional GHz suffix (2026-11-17); multi-socket branch (hw.cpu_sockets > 1) reuses speed layout + hist.cpuSock buckets
+PASS  cpu card title carries static model (ext.cpu_name, both branches) + idempotent late-ext label refresh; absent field keeps plain 'CPU', never invents a name (2026-11-17)
+PASS  cpu_name sampler: stdlib registry (nt) / /proc/cpuinfo (posix), whitespace-collapsed, 64-char cap, empty on any failure -> field omitted
+PASS  cpu legend baseline (host hotfix rev7): multi-socket subs led by cpu1/cpu2 swatch glyphs + subOf(); single-socket sub gets cpu1 glyph + cores/threads or 整机 fallback (old setSub threads line gone)
+PASS  cpu legend colours: css .mx-sw--cpu1/--cpu2 keyed to info theme vars; .st-metric__spark .speed-prefill re-based to currentColor so each card's right/prefill line auto-matches its own main line (accent vs info tone)
+PASS  sub-line alignment skeleton (host hotfix): cardHtml wraps label text in mx-label-t (always one line + ellipsis); css locks the wrap rule and the fixed-height big-number row so subs start at the same offset on every card
+PASS  node smoke: monitor.js IIFE + full tick chain run against a DOM stub, no ReferenceError/TypeError (SPEED_DECODE incident class)  SMOKE OK: IIFE + tick + async render chain drained, no ReferenceError
+PASS  gate-card hidden when queued=0  absent-field hidden=True pruned-after-queued-returns-0=True (G0ABSENT 1
+G2SHOWN 1 SUB "网关等待 · 在飞 1/1" VAL "2<small> 个</small>"
+G0PRUNED 1
+GATE SMOKE DONE)
+PASS  gate-card shown when queued=2  shown=True sub='G2SHOWN 1 SUB "网关等待 · 在飞 1/1" VAL "2<small> 个</small>"'
+PASS  unknown path falls through to upstream
+PASS  "/" is NOT claimed (console belongs to upstream)
+PASS  /ext.json over HTTP: 2 fake GPUs with uuid + 18-field extras
+PASS  /monitor over HTTP: page has the fused layout blocks (metrics grid, state, ctx, table, cc)
+PASS  /monitor.js over HTTP: served with javascript content-type
+PASS  /monitor.css over HTTP: text/css content-type
+PASS  /monitor-sprite.svg over HTTP: svg content-type + non-empty body
+PASS  /health over HTTP ok
+PASS  fall-through returns 404 in the mini server (route not claimed)
+PASS  live snapshot index swap: uuid list unchanged
+
+54/54 PASS

@@ -51,6 +51,7 @@ the old script-injection watcher is removed. /ext.js is kept only as a retired
 shim for pages that still carry the old line. Local routes never reach the
 upstream and never create ledger rows.
 """
+import collections
 import gzip
 import hashlib
 import json
@@ -75,6 +76,7 @@ except Exception:
 
 CANON_INT = ("prompt", "cached", "new_prompt", "gen")
 BODY_ACCUM_CAP = 32 * 1024 * 1024        # stop keeping the private copy past 32 MiB; relay is unaffected
+GATE_DEFAULTS = (0, 10.0, 600.0)         # (max_inflight, queue_beat_s, gate_wait_s); 0 = gate off
 _HOP_HEADERS = {
     "host", "content-length", "transfer-encoding", "connection", "keep-alive",
     "upgrade", "trailer", "te", "proxy-authenticate", "proxy-authorization",
@@ -114,6 +116,137 @@ class Recorder:
                 self.f = open(os.path.join(self.dir, f"requests-{day}.jsonl"), "a", encoding="utf-8", buffering=1)
                 self.day = day
             self.f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+
+class Gate:
+    """FIFO admission gate for chat requests (rev10). Only ever delays NEW
+    entries; in-flight requests are never touched. Every state change holds
+    self._cond's lock; on_beat (heartbeat write) is always called OUTSIDE it."""
+
+    def __init__(self):
+        self._cond = threading.Condition()
+        self._waiters = collections.deque()   # elements: [seq:int, granted:bool]
+        self._seq = 0
+        self.inflight = 0
+        self.queued = 0
+        self.waited_total = 0                 # ms accumulated across waited requests
+        self.beat_total = 0                   # heartbeat frames ever emitted
+
+    def acquire(self, limit, beat_s, wait_s, on_beat=None) -> int:
+        """Take a slot; return this request's waited ms (0 = never waited).
+        Called only when limit > 0. Never rejects: after wait_s the request
+        is forwarded anyway (worst case = today's behaviour)."""
+        t0 = time.monotonic()
+        deadline = t0 + wait_s
+        next_beat = t0 + beat_s
+        my = None
+        while True:
+            outcome = None                    # "granted" / "expired" / None=keep waiting
+            beat_now = False
+            with self._cond:
+                if my is None:
+                    if self.inflight < limit:         # fast path: a free slot
+                        self.inflight += 1
+                        return 0
+                    my = [self._seq, False]
+                    self._seq += 1
+                    self._waiters.append(my)
+                    self.queued += 1
+                while True:
+                    if my[1]:                         # slot handed over by release()
+                        outcome = "granted"
+                        break
+                    if not self._waiters or self._waiters[0] is my:
+                        if self.inflight < limit:     # head of queue may take a free slot
+                            self._waiters.popleft()
+                            self.inflight += 1
+                            my[1] = True
+                            outcome = "granted"
+                            break
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:                # waited gate_wait_s out: forward anyway
+                        try:
+                            self._waiters.remove(my)
+                        except ValueError:
+                            pass
+                        self.inflight += 1            # deliberate over-run: never reject
+                        outcome = "expired"
+                        break
+                    timed_out = not self._cond.wait(timeout=min(beat_s, remaining))
+                    if not my[1] and timed_out and time.monotonic() >= next_beat:
+                        beat_now = True               # heartbeat due: call on_beat off-lock
+                        break
+            if outcome:
+                break
+            if beat_now:
+                if on_beat:
+                    try:
+                        on_beat()
+                    except Exception:
+                        pass                          # a lost heartbeat never aborts the wait
+                with self._cond:
+                    self.beat_total += 1
+                _push_gate(self)                      # observation push at beat_total update
+                next_beat += beat_s
+        waited_ms = int((time.monotonic() - t0) * 1000)
+        if waited_ms > 0:
+            with self._cond:
+                self.waited_total += waited_ms
+        return waited_ms
+
+    def release(self):
+        """The single finally-exit. A freed slot is handed DIRECTLY to the
+        queue head — a fresh arrival may not cut in front of a waiter."""
+        with self._cond:
+            self.inflight -= 1
+            if self._waiters:
+                head = self._waiters.popleft()
+                head[1] = True
+                self.inflight += 1
+            self._cond.notify_all()
+
+    def snapshot(self, limit):
+        with self._cond:
+            return {"inflight": self.inflight, "queued": len(self._waiters),
+                    "limit": limit, "waited_total": self.waited_total,
+                    "beat_total": self.beat_total}
+
+
+_last_limit = 0        # the limit of the most recent _gate_params read
+
+
+def _push_gate(gate):
+    """Best-effort observation push: a sampler without data means the field
+    is simply absent. Never affects accounting."""
+    if _monitor_ext is not None and hasattr(_monitor_ext, "push_gate"):
+        try:
+            _monitor_ext.push_gate(gate.snapshot(_last_limit))
+        except Exception:
+            pass
+
+
+def _gate_params(cfg_path):
+    """Per-request config re-read: changing the thresholds needs no restart."""
+    global _last_limit
+    try:
+        c = load_config(cfg_path)
+    except Exception:
+        _last_limit = GATE_DEFAULTS[0]
+        return GATE_DEFAULTS
+    try:
+        limit = int(c.get("max_inflight", 0))
+    except (TypeError, ValueError, AttributeError):
+        limit = GATE_DEFAULTS[0]
+    try:
+        beat_s = float(c.get("queue_beat_s", 10))
+    except (TypeError, ValueError, AttributeError):
+        beat_s = GATE_DEFAULTS[1]
+    try:
+        wait_s = float(c.get("gate_wait_s", 600))
+    except (TypeError, ValueError, AttributeError):
+        wait_s = GATE_DEFAULTS[2]
+    _last_limit = limit
+    return limit, beat_s, wait_s
 
 
 def key_identity(headers, cfg):
@@ -197,6 +330,8 @@ class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     recorder = None
     cfg = None
+    gate = None
+    cfg_path = None
 
     def log_message(self, *a):            # silence default stderr logging
         pass
@@ -292,6 +427,31 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("X-Accel-Buffering", "no")
         self.send_header("Transfer-Encoding", "chunked")
         self.end_headers()
+
+    def _start_gate_chunked(self):
+        """Send SSE response headers on behalf of the gate while the request
+        still queues (rev10 heartbeat promise). Same header shape as
+        _start_chunked, but there is no upstream response to relay headers
+        from yet. RELAY CONTRACT §4: once these headers are out, NO second
+        HTTP response may follow on this socket."""
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache, no-transform")
+        self.send_header("X-Accel-Buffering", "no")
+        self.send_header("Transfer-Encoding", "chunked")
+        self.end_headers()
+
+    def _write_gate_hb(self):
+        """One SSE comment frame (`: ping`) in the SAME chunk framing _pump
+        uses. Parsers ignore comment lines by design."""
+        hb = b": ping\n\n"
+        try:
+            self.wfile.write(("%x\r\n" % len(hb)).encode("ascii") + hb + b"\r\n")
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            # client hung up mid-heartbeat; the slot stays held until the
+            # upstream relay finishes (returned by the finally, not here)
+            self.close_connection = True
 
     def _pump(self, resp, keep_body):
         """Relay every upstream chunk as it arrives. Returns
@@ -398,88 +558,124 @@ class Handler(BaseHTTPRequestHandler):
             req_obj = dict(req_obj)
             req_obj["stream_options"] = opts
             body = json.dumps(req_obj).encode()
-        req = urlreq.Request(up, data=body, headers=headers, method="POST")
-        tag, fp = key_identity(self.headers, cfg)
-        rec = {"ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "src": "proxy",
-               "model": req_obj.get("model", ""), "key": tag, "fp": fp,
-               "ip": client_ip(self)}
-        fwd = self.headers.get("X-Forwarded-For")
-        if fwd:
-            rec["fwd"] = fwd.split(",", 1)[0].strip()
-        responded = False                     # once headers are out, no second response is allowed
+        # ---- rev10 queue gate: only ever delays THIS entry point; the request
+        # content is untouched, in-flight requests are never reclaimed.
+        limit, beat_s, wait_s = _gate_params(self.cfg_path)
+        gate_on = limit > 0
+        gate_headers_sent = False          # 闸已替客户端发过响应头？
+        responded = False                  # once headers are out, no second response is allowed
         truncated = False
+        waited_ms = 0
+        is_stream_req = req_obj.get("stream") is True
+        if gate_on:
+            def _gate_beat():              # 仅 SSE 请求有字节可发；非流式＝静默排队（无可发字节）
+                nonlocal gate_headers_sent, responded
+                if is_stream_req:
+                    if not gate_headers_sent:
+                        self._start_gate_chunked()
+                        gate_headers_sent = True
+                        responded = True   # headers are on the wire: RELAY CONTRACT §4 applies
+                    self._write_gate_hb()
+            waited_ms = self.gate.acquire(limit, beat_s, wait_s,
+                                          _gate_beat if is_stream_req else None)
+            _push_gate(self.gate)
         try:
-            with urlreq.urlopen(req, timeout=1800) as resp:
-                ctype = resp.headers.get("Content-Type", "application/json")
-                is_sse = (("event-stream" in ctype.lower()
-                           or req_obj.get("stream") is True)
-                          and hasattr(resp, "read1"))
-                if is_sse:
-                    self._start_chunked(resp.status, resp.headers)
-                    responded = True
-                    data, client_ok, truncated = self._pump(resp, True)
-                else:
-                    data = resp.read()
-                    responded = True
-                    self._send_fixed(resp.status, resp.headers, data)
-                if resp.status == 200:
-                    # Relay bytes stay untouched; only the private accounting copy
-                    # is decompressed. A gzip upstream must not silently record 0 tokens.
-                    parse_body = data
-                    if "gzip" in (resp.headers.get("Content-Encoding") or "").lower():
-                        try:
-                            parse_body = gzip.decompress(data)
-                        except (OSError, ValueError):
-                            pass
-                    if "event-stream" in ctype.lower() or parse_body.lstrip().startswith(b"event:"):
-                        got = usage_from_sse(parse_body, kind)
+            req = urlreq.Request(up, data=body, headers=headers, method="POST")
+            tag, fp = key_identity(self.headers, cfg)
+            rec = {"ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "src": "proxy",
+                   "model": req_obj.get("model", ""), "key": tag, "fp": fp,
+                   "ip": client_ip(self)}
+            fwd = self.headers.get("X-Forwarded-For")
+            if fwd:
+                rec["fwd"] = fwd.split(",", 1)[0].strip()
+            try:
+                with urlreq.urlopen(req, timeout=1800) as resp:
+                    ctype = resp.headers.get("Content-Type", "application/json")
+                    is_sse = (("event-stream" in ctype.lower()
+                               or req_obj.get("stream") is True)
+                              and hasattr(resp, "read1"))
+                    if is_sse and gate_headers_sent:
+                        # heartbeat headers are already on the wire — never send
+                        # headers twice; the real stream joins the open chunk stream
+                        responded = True
+                        data, client_ok, truncated = self._pump(resp, True)
+                    elif is_sse:
+                        self._start_chunked(resp.status, resp.headers)
+                        responded = True
+                        data, client_ok, truncated = self._pump(resp, True)
+                    elif gate_headers_sent:
+                        # client claimed stream but upstream answered non-stream:
+                        # fixed body re-framed into the open chunk stream (bytes kept)
+                        responded = True
+                        data, client_ok, truncated = self._pump(resp, True)
                     else:
-                        got = {}
-                        try:
-                            obj = json.loads(parse_body)
-                            if isinstance(obj, dict):
-                                got = usage_from_anthropic(obj) if kind == "anthropic" else usage_from_openai(obj)
-                                met = obj.get("metrics")
-                                if isinstance(met, dict):
-                                    got["engine_tps"] = met.get("tokens_per_second")
-                                    got["engine_gen_ms"] = met.get("generation_time_ms")
-                        except ValueError:
-                            pass
-                    for k in ("prompt", "cached", "gen"):
-                        rec[k] = got.get(k, 0)
-                    for k in ("engine_tps", "engine_gen_ms"):   # vLLM --enable-per-request-metrics
-                        if got.get(k):
-                            rec[k] = got[k]
-                    if got.get("model"):
-                        rec["model"] = got["model"]
+                        data = resp.read()
+                        responded = True
+                        self._send_fixed(resp.status, resp.headers, data)
+                    if resp.status == 200:
+                        # Relay bytes stay untouched; only the private accounting copy
+                        # is decompressed. A gzip upstream must not silently record 0 tokens.
+                        parse_body = data
+                        if "gzip" in (resp.headers.get("Content-Encoding") or "").lower():
+                            try:
+                                parse_body = gzip.decompress(data)
+                            except (OSError, ValueError):
+                                pass
+                        if "event-stream" in ctype.lower() or parse_body.lstrip().startswith(b"event:"):
+                            got = usage_from_sse(parse_body, kind)
+                        else:
+                            got = {}
+                            try:
+                                obj = json.loads(parse_body)
+                                if isinstance(obj, dict):
+                                    got = usage_from_anthropic(obj) if kind == "anthropic" else usage_from_openai(obj)
+                                    met = obj.get("metrics")
+                                    if isinstance(met, dict):
+                                        got["engine_tps"] = met.get("tokens_per_second")
+                                        got["engine_gen_ms"] = met.get("generation_time_ms")
+                            except ValueError:
+                                pass
+                        for k in ("prompt", "cached", "gen"):
+                            rec[k] = got.get(k, 0)
+                        for k in ("engine_tps", "engine_gen_ms"):   # vLLM --enable-per-request-metrics
+                            if got.get(k):
+                                rec[k] = got[k]
+                        if got.get("model"):
+                            rec["model"] = got["model"]
+                    else:
+                        rec["error"] = resp.status
+            except urlerr.HTTPError as e:
+                rec["error"] = e.code
+                if responded:
+                    self.close_connection = True
                 else:
-                    rec["error"] = resp.status
-        except urlerr.HTTPError as e:
-            rec["error"] = e.code
-            if responded:
-                self.close_connection = True
-            else:
-                try:
-                    data = e.read() or b""
-                except Exception:
-                    data = b""
-                self._send_fixed(e.code, e.headers, data)
-        except Exception as e:            # record the failure, then surface a 502 if nothing was sent yet
-            rec["error"] = f"{type(e).__name__}: {e}"[:120]
-            if responded:
-                self.close_connection = True
-            else:
-                data = json.dumps({"error": {"message": rec["error"]}}).encode()
-                self._send_fixed(502, {}, data)
-        if truncated:
-            rec["body_truncated"] = True
-        rec["gen_ms"] = int((time.monotonic() - t0) * 1000)
-        rec["new_prompt"] = rec.get("prompt", 0) - rec.get("cached", 0)
-        if rec.get("gen") and rec["gen_ms"]:
-            rec["decode_tok_s"] = round(rec["gen"] / (rec["gen_ms"] / 1000), 1)
-        for k in CANON_INT:
-            rec.setdefault(k, 0)
-        self.recorder.write(rec)
+                    try:
+                        data = e.read() or b""
+                    except Exception:
+                        data = b""
+                    self._send_fixed(e.code, e.headers, data)
+            except Exception as e:            # record the failure, then surface a 502 if nothing was sent yet
+                rec["error"] = f"{type(e).__name__}: {e}"[:120]
+                if responded:
+                    self.close_connection = True
+                else:
+                    data = json.dumps({"error": {"message": rec["error"]}}).encode()
+                    self._send_fixed(502, {}, data)
+            if truncated:
+                rec["body_truncated"] = True
+            rec["gen_ms"] = int((time.monotonic() - t0) * 1000)
+            if waited_ms > 0:                 # only requests that actually waited carry this
+                rec["queue_wait_ms"] = waited_ms
+            rec["new_prompt"] = rec.get("prompt", 0) - rec.get("cached", 0)
+            if rec.get("gen") and rec["gen_ms"]:
+                rec["decode_tok_s"] = round(rec["gen"] / (rec["gen_ms"] / 1000), 1)
+            for k in CANON_INT:
+                rec.setdefault(k, 0)
+            self.recorder.write(rec)
+        finally:
+            if gate_on:
+                self.gate.release()           # the single slot-return exit (红线二: in-flight never reclaimed before here)
+                _push_gate(self.gate)
 
     def do_GET(self):                     # pass-through: /v1/models, console pages, /metrics, ...
         # Local monitor routes are answered here and never forwarded. "/" is NOT
@@ -621,6 +817,8 @@ def main():
     host, _, port = listen.rpartition(":")
     host = host or "0.0.0.0"
     Handler.cfg = cfg
+    Handler.gate = Gate()
+    Handler.cfg_path = sys.argv[sys.argv.index("--config") + 1]
     Handler.recorder = Recorder(out)
 
     class _Server(ThreadingHTTPServer):

@@ -1,0 +1,33 @@
+PASS  proxy boots on throwaway port
+PASS  non-stream: status, Content-Length, ledger usage  status=200 rows=1
+PASS  SSE: not buffered (headers arrive early)  ttfb=0.032s total=1.234s TE=chunked
+PASS  SSE: byte-preserving relay + final usage accounting  chunks=8 rows=2 usage={'prompt': 321, 'cached': 111, 'gen': 87}
+PASS  stream_options.include_usage injected  seen=2
+PASS  non-chat POST: auth headers survive  x-api-key=secret-xyz anthropic-version=2023-06-01
+PASS  non-chat POST: no ledger row
+PASS  chunked request body arrives intact  echoed='{"model":"m","stream":false}' bytes=456
+PASS  non-object JSON body does not crash  status=200
+PASS  upstream 401 passes through + is recorded  status=401 error=401
+PASS  upstream 500 passes through
+PASS  Content-Encoding relayed + usage still accounted  usage={'prompt': 321, 'gen': 87}
+PASS  mid-stream failure: no second HTTP response  incomplete=True partial_bytes=154 status-lines-in-body=0 ledger_error=IncompleteRead: IncompleteRead(0 bytes read)
+PASS  client disconnect still records full usage  rows 8->9 gen=87
+PASS  5 concurrent streams stay parallel  elapsed=1.22s rows+5 errs=[]
+PASS  GET /health local route
+PASS  GET upstream 401 passes through
+PASS  GET Content-Encoding relayed
+PASS  Bearer / bearer -> same key + fp  keys=['Selftest User', 'Selftest User', 'Selftest User'] fps=['086e5f5c', '086e5f5c', '086e5f5c']
+PASS  mixed-case BEARER -> same key + fp  key=Selftest User fp=086e5f5c
+PASS  x-api-key chat request records fp  key=9f7de32b fp=9f7de32b
+PASS  every ledger row has valid fp (8 lowercase hex or none)  rows=18 bad=[] none_rows=14
+PASS  gate:default no gate section in ext.json  gate=None keys=['error', 'gpu_query_fields', 'gpus', 'ok', 'pcie_txrx_supported', 'ts']
+PASS  gate:2nd request gets real upstream under limit1  2nd status=200 refused=False 1st status=200 1st unaffected=True body==upstream:True
+PASS  gate:sse heartbeat before slot  ttfb_ping=0.45s head=b'HTTP/1.1 200 OK\r\nServer: BaseHTTP/0.6 Python/3.13.14\r\nDate: Tue, 17 No' ping_before_data=True data_frames=8 has_DONE=True status_lines=1
+PASS  gate:gate_wait_s expiry forwards  waited=1.02s (gate_wait_s=1.0) status=200 refused=False
+PASS  gate:fifo order preserved  arrival_order=['fa', 'fb', 'fc'] initiation_order=[fa, fb, fc] final={'inflight': 0, 'queued': 0}
+PASS  gate:no slot leak after failures  inflight after upstream500 / ssebreak / client-disconnect = [0, 0, 0]
+PASS  gate:non-chat never gated  gate ON + saturated: GET 0.02s POST embeddings 0.03s gate.queued=0 | gate OFF: GET 0.03s POST 0.02s
+PASS  gate:queue_wait_ms written only when waited  ledger=C:\Users\peter\AppData\Local\Temp\proxy-selftest-iqoqzwei\requests-2026-11-17.jsonl waited row fp=36a8a8fc queue_wait_ms=1010 | unwaited row fp=24bacc6a has field=False
+PASS  gate:ext.json gate section shape  gate={'inflight': 0, 'queued': 0, 'limit': 1, 'waited_total': 5551, 'beat_total': 11}
+
+31/31 PASS

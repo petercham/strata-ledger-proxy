@@ -1,6 +1,6 @@
 # 清单与来源登记
 
-发行版本：`strata-ledger-proxy` 2026-11-09（本次修订 2026-11-17 · rev9：CPU 卡标题带型号；另含 rev8 后补的 `config-examples/` 样例、README 踩坑登记、真机截屏配图与省钱计算器口径＋价表随包；git 仓形态，无 ZIP）
+发行版本：`strata-ledger-proxy` 2026-11-09（本次修订 2026-11-17 · rev10：网关侧排队闸 v3（对话请求 FIFO 准入＋SSE 等待心跳）；另含 rev9 CPU 卡型号、rev8 后补的 `config-examples/` 样例、README 踩坑登记、真机截屏配图与省钱计算器口径＋价表随包；git 仓形态，无 ZIP）
 用途：给另一台机器（代号 5090）替换旧的「旁路边读引擎日志」账本链的**独立工具包**。
 运行要求：本机 Python 3.13 实测通过；3.8 未实测，静态检查未见 3.9+ 专有语法（内置泛型下标 `list[...]`、`X | Y` 联合类型、match 语句等均未使用）。主链仅标准库；`psutil` 与 `nvidia-smi` 为监控增强，缺失时自动降级。目标机若用更旧版本，请先跑 `bootstrap.py --selftest` 验证。
 
@@ -347,6 +347,24 @@
 | `README.md` 第八节看护划界段 | 补「已对上游核对属实」＋pristine v0.2.6 的具体符号名与 issue 号 | 声明可核、出处随身 |
 
 功能代码零改动。
+
+### 2.19 rev10：排队闸 v3——网关侧对话请求 FIFO 准入闸＋SSE 等待心跳（2026-11-17 · 功能改动 · 三套全绿）
+
+背景（决策输入件 `gate-v3-design-2026-11-17`，票 `2026-11-17-ledger-gate-v3`）：Strata 引擎并行模式准入环节无闸、无 FIFO 序，多请求并发时会话降成龟速（实测双满每行 ~32 tok/s vs 独行 ~110）。缺口在网关补：反代是唯一能看见全部入栈请求的中立层，不给引擎源码再背调度器补丁。**红线三条**：不引入任何拒绝态（429 重试风暴事故实证在先）；闸只推迟新入口、绝不触碰在飞请求；缺省 `max_inflight=0`＝行为与 `9bfcf0d` 字节级一致。
+
+| 文件 | 改动 | 为什么 |
+|---|---|---|
+| `collector_proxy.py` | 模块级 `GATE_DEFAULTS=(0,10.0,600.0)`；新增 `Gate` 类（`threading.Condition`＋FIFO `deque`＋计数；`acquire` 快路直取/排队路只有队首可取位/等满 `gate_wait_s` **超时强放照样转发**；`release` 把空位**直接移交队首**防新到者截胡；`snapshot` 五键）；`_gate_params(cfg_path)` 每对话请求重读一次 config（改阈值不重启，坏值按缺省）；`main()` 挂 `Handler.gate`/`Handler.cfg_path`；`do_POST` 对话分支在 body 定型后、`urlopen` 前挂闸（`responded`/`truncated` 初始化纯位置前移），整段转发包进 `try/finally`——`finally` 是槽位归还唯一出口；新增 `_start_gate_chunked`（心跳承诺：替排队中的 SSE 请求先发响应头，形状同 `_start_chunked`）与 `_write_gate_hb`（`: ping` SSE 注释帧走 `_pump` 同款 chunk 帧格式，写失败只 `close_connection`）；转发段 `gate_headers_sent` 三态适配（头已上线→不再发头直接 `_pump` 接引擎真实流；客户端称 stream 而上游回非 stream→定长体重新分帧泵进已开 chunk 流）；异常路径零改动（`responded` 语义天然覆盖「心跳后上游 HTTP 错误→不写第二响应」）；账本新增 `queue_wait_ms`（等待过才写，未等待字段缺席）；`_push_gate` 观测推送三调用点（acquire 返回后/release 后/心跳计数后），monitor_ext 无通道即静默 | 排队不拒绝＝最坏情况回到现状；一次响应原则（RELAY CONTRACT §4）是心跳设计的第一约束 |
+| `monitor_ext.py` | 新增 `push_gate(state)`/`get_gate()` 注入通道（`_GATE_LOCK` 保护，push 附 `_at` 时刻，任何异常吞掉）；`Sampler._sample()` 在 push 新鲜（≤30s）时出 `out["gate"]`（五键 `inflight/queued/limit/waited_total/beat_total`）；闸从未启用＝`gate` 字段整体缺席（现有前端与 selftest 天然兼容）；`start()`/`answer()`/路由表/`SAMPLER` 零改动 | 观测走既有注入通道，绝不影响记账 |
+| `monitor.js` | 新增 `renderGate(ext)`（`data-mx-section="gate"` 独立区，享受 ensure/pruneSection 分区纪律）：`queued==0`（含字段缺席）→ 不渲染＋清旧卡——防与引擎原生 queued 语义混淆；`queued>0` → 「等待中」卡，小字「网关等待 · 在飞 N/max」；`tick()` 两挂点（ext 在→`renderGate`；ext 断→本区 prune）；不新增波形历史桶，`renderState`（引擎原生 queued 文案）零改动 | 两语义分卡分文案，互不混淆 |
+| `config.template.json` | `force_include_usage` 后新增 `"max_inflight": 0, "queue_beat_s": 10, "gate_wait_s": 600`（缺省全关）；comment 追加排队闸口径段（含义／改值即效／永不经闸路径清单） | 缺省零回归从模板起 |
+| `selftest_proxy.py` | 二阶段：原 15 组断言（**逐字零改动**）跑完＝缺省零回归面；读 `/ext.json` 无 `gate` 键；随后同 cfg_path 重写 config（`max_inflight=1, queue_beat_s=0.4, gate_wait_s=1.0`）重启 proxy 跑 9 组 `gate:` 断言——判据②第二请求拿上游真实响应、判据③SSE 心跳先于真实流（`data:` 帧完整＋`[DONE]`＋单一状态行）、判据④等满照样转发、判据⑤FIFO 到达序、判据⑥故障注入 inflight 归零（500/ssebreak/客户端断 三读数 [0,0,0]）、判据⑦非对话路径开闸满位与关闸两组读数均不变、判据⑧`queue_wait_ms` 等待行在场/未等待行缺席、gate 段五键形状。stub 新增 `hold` case（`HOLD_GATE` 事件逐个放行）。当次 31/31 | 判据全部机械化 |
+| `selftest_monitor.py` | H-1 态甲（主理人裁定纳入闭集）：新增独立 node 行为冒烟——ext stub 喂 `gate` 段三态（字段缺席→无卡；`queued=2`→卡出现且文案含「网关等待」；回到 0→卡被 prune）；既有 52 组断言逐字零改动。当次 54/54 | queued=0 不渲染的**行为**保证不能只靠静态 grep |
+| `README.md` | 第八节补排队闸使用口径段；第九节新增第 9、10 条边界（心跳承诺后上游 HTTP 错误降为流内/流断形态，账本 `error` 如实登记；非流式排队全程静默） | 边界不许粉饰 |
+
+**契约不变量核验**：`_pump` 帧语义、`_start_chunked`/`_send_fixed`/`_pass_post`/`do_GET`/`_read_body`/`_forward_headers`/`_clean_headers` 本体零改动；账本既有字段语义与写入条件零改动（新增字段仅 `queue_wait_ms`）；RELAY CONTRACT §1–4 未回归（`grep -cE '(429|409)' collector_proxy.py` ＝ 0）。`ledger_watchdog.py`/`switch_proxy.py`/引擎侧/在岗位零触碰。三套回归当次：proxy 22→31、monitor 52→54、watchdog 16 不变。
+
+**文件数不变**（本轮无新增/删除文件，仍 35 个）；`selftest_monitor.py` 描述行按 2.19 口径理解为含 gate 行为冒烟。**在岗同步属票后置动作**（安全窗口由主理人另排；本机在岗首值 `max_inflight: 1` 属换脑窗口口径，不在本票执行）。
 
 
 ## 三、如实登记：代码分叉

@@ -512,6 +512,165 @@ def main():
     else:
         rec("node smoke skipped (node not installed on this box)", True)
 
+    # ---- 7c. gate card behaviour (rev10, H-1 态甲): a second node smoke drives
+    # the render chain with ext.gate.queued = 0 then 2 then 0 again. Expect:
+    # queued=0 (and field absent) -> NO "等待中" card; queued=2 -> card shown,
+    # sub text carries 「网关等待」; back to 0 -> card pruned again. This is the
+    # behavioural guard the static greps cannot give.
+    if _node:
+        _GATE_SMOKE = r"""
+"use strict";
+const fs = require("fs");
+const src = fs.readFileSync(process.argv[2], "utf-8");
+const els = {};
+function registerIds(id) { els[id] = makeEl(id); return els[id]; }
+function makeEl(id) {
+  const _s = new Set();
+  const el = {
+    id, hidden: false, _html: "", textContent: "", className: "",
+    dataset: {}, children: [], style: {}, _removed: false,
+    classList: {
+      toggle(c, force) {
+        if (force === true) _s.add(c);
+        else if (force === false) _s.delete(c);
+        else if (_s.has(c)) _s.delete(c); else _s.add(c);
+      },
+      add(c) { _s.add(c); }, remove(c) { _s.delete(c); },
+      contains(c) { return _s.has(c); },
+    },
+    set innerHTML(v) { this._html = String(v); },
+    get innerHTML() { return this._html; },
+    querySelector(sel) { return makeEl(id + sel); },
+    querySelectorAll(sel) { return [makeEl(id + sel + "0"), makeEl(id + sel + "1")]; },
+    setAttribute() {}, getAttribute() { return null; },
+    insertAdjacentHTML(pos, html) {
+      this._html += html;
+      const re = /id="([^"]+)"/g; let m;
+      const sec = /data-mx-section="([^"]+)"/.exec(html);
+      while ((m = re.exec(html))) {
+        if (!document.getElementById(m[1])) registerIds(m[1]);
+        if (sec) {
+          const child = document.getElementById(m[1]);
+          if (child && !this.children.includes(child)) {
+            child.dataset = child.dataset || {};
+            child.dataset.mxSection = sec[1];
+            child.remove = () => {
+              child._removed = true;
+              const i = this.children.indexOf(child);
+              if (i >= 0) this.children.splice(i, 1);
+            };
+            this.children.push(child);
+          }
+        }
+      }
+    },
+    remove() { this._removed = true; },
+  };
+  return el;
+}
+const IDS = ["api-key", "apikey-note", "apikey-row", "apikey-row-inner",
+  "cc-bars", "cc-card", "cc-facts", "cc-mem-bar", "cc-mem-text", "cc-note",
+  "cc-slots-bar", "cc-slots-text", "cc-sum", "ctx-fill", "ctx-pct", "ctx-sub",
+  "metrics", "mx-status", "ram-bar", "ram-progress", "ram-text", "req-all",
+  "req-body", "req-totals", "req-wrap", "slots-bar", "slots-text",
+  "state-badges", "state-bar", "state-detail", "state-label", "state-progress",
+  "temp-bar", "temp-text", "theme-btn", "theme-icon"];
+for (const id of IDS) els[id] = makeEl(id);
+
+global.document = {
+  readyState: "complete",
+  getElementById: (id) => (els[id] && !els[id]._removed) ? els[id] : null,
+  querySelector: () => null,
+  querySelectorAll: () => [],
+  addEventListener: () => {},
+  documentElement: { dataset: {}, setAttribute() {}, getAttribute() { return null; } },
+  matchMedia: () => ({ matches: false, addEventListener: () => {} }),
+};
+global.localStorage = { _m: {}, getItem(k) { return k in this._m ? this._m[k] : null; },
+  setItem(k, v) { this._m[k] = String(v); }, removeItem(k) { delete this._m[k]; } };
+global.window = global;
+global.matchMedia = () => ({ matches: false, addEventListener: () => {} });
+global.AbortController = class { constructor() { this.signal = {}; } abort() {} };
+
+// __gate is swapped between explicit ticks: absent -> queued=2 -> queued=0
+global.__gate = undefined;
+global.__tick = null;          // captured from monitor.js's own setTimeout(tick, TICK_MS)
+global.fetch = async (url, opts) => {
+  if (String(url).includes("/metrics")) {
+    return { ok: true, status: 200, json: async () => ({
+      engine: { state: "idle", expert_slots: 2, expert_cache_mib: 512, max_context: 131072 },
+      live: { state: "idle", prompt_tokens: 0, max_context: 131072 },
+      hardware: {}, hardware_static: {}, history: {}, requests: [], requests_kept: 0,
+      totals: {}, conversation_cache: { enabled: false } }) };
+  }
+  const ext = {
+    ok: true, ts: Date.now() / 1000, gpus: [], pcie_txrx_supported: false,
+    ram: { used: 8e9, total: 32e9 }, swap: { used: 0, total: 0 },
+    disks: [], net: [],
+  };
+  if (global.__gate !== undefined) ext.gate = global.__gate;
+  return { ok: true, status: 200, json: async () => ext };
+};
+
+// stub setTimeout: capture the scheduled tick, do NOT auto-chain (explicit drive)
+const realSetTimeout = setTimeout;
+global.setTimeout = (fn) => { global.__tick = fn; return 0; };
+
+const gateCard = () => els["card-gate"] && !els["card-gate"]._removed;
+
+try {
+  (0, eval)(src);              // tick #1 starts (gate field absent)
+  process.on("uncaughtException", (e) => { console.error("GATE SMOKE FAIL (async):", (e && e.stack) || e); process.exit(1); });
+  process.on("unhandledRejection", (e) => { console.error("GATE SMOKE FAIL (rejection):", (e && e.stack) || e); process.exit(1); });
+  const settle = () => new Promise((res) => realSetTimeout(res, 80));
+  (async () => {
+    await settle();                                   // tick #1 rendered with NO gate field
+    console.log("G0ABSENT " + (gateCard() ? 0 : 1));
+    global.__gate = { inflight: 1, queued: 2, limit: 1, waited_total: 1500, beat_total: 3 };
+    await global.__tick();                            // tick #2: queued=2
+    const shown = gateCard();
+    const sub = (els["card-gate-s"] && els["card-gate-s"].textContent) || "";
+    const val = (els["card-gate-v"] && els["card-gate-v"].innerHTML) || "";
+    console.log("G2SHOWN " + (shown ? 1 : 0) + " SUB " + JSON.stringify(sub) + " VAL " + JSON.stringify(val));
+    global.__gate = { inflight: 1, queued: 0, limit: 1, waited_total: 1500, beat_total: 3 };
+    await global.__tick();                            // tick #3: queued back to 0 -> prune
+    console.log("G0PRUNED " + (gateCard() ? 0 : 1));
+    console.log("GATE SMOKE DONE");
+    process.exit(0);
+  })().catch((e) => { console.error("GATE SMOKE FAIL:", (e && e.stack) || e); process.exit(1); });
+} catch (e) {
+  console.error("GATE SMOKE FAIL:", (e && e.stack) || e);
+  process.exit(1);
+}
+"""
+        with _tf.NamedTemporaryFile("w", suffix=".js", delete=False, encoding="utf-8") as _t:
+            _t.write(_GATE_SMOKE)
+            _gp = _t.name
+        try:
+            _gr = _sp.run([_node, _gp, os.path.join(HERE, "monitor.js")],
+                          capture_output=True, text=True, timeout=30)
+            _out = _gr.stdout or ""
+            _g0 = "G0ABSENT 1" in _out
+            _g2 = "G2SHOWN 1" in _out
+            _subline = ""
+            for _ln in _out.splitlines():
+                if _ln.startswith("G2SHOWN"):
+                    _subline = _ln
+            _gw = "网关等待" in _subline
+            _gp0 = "G0PRUNED 1" in _out
+            rec("gate-card hidden when queued=0", _g0 and _gp0,
+                "absent-field hidden=%s pruned-after-queued-returns-0=%s (%s)"
+                % (_g0, _gp0, (_gr.stderr or _out or "").strip()[-120:]))
+            rec("gate-card shown when queued=2", _g2 and _gw,
+                "shown=%s sub=%r" % (_g2, _subline[:120]))
+        finally:
+            try:
+                os.unlink(_gp)
+            except OSError:
+                pass
+    else:
+        rec("gate-card behaviour smoke skipped (node not installed)", True)
+
     rec("unknown path falls through to upstream", m.answer("/v1/models") is None)
     rec('"/" is NOT claimed (console belongs to upstream)', m.answer("/") is None)
 

@@ -39,6 +39,11 @@ KEY_LABEL = "Selftest User"
 SEEN = []
 SEEN_LOCK = threading.Lock()
 RESULTS = []
+HOLD_GATE = threading.Event()          # gate stage (T-3): case=hold blocks here; set() releases exactly one
+KEY_WAIT = "sk-gate-wait-marker"       # stage-2 marker keys: ledger rows found by their fp
+KEY_FAST = "sk-gate-fast-marker"
+KEY_WAIT_FP = hashlib.sha256(KEY_WAIT.encode()).hexdigest()[:8]
+KEY_FAST_FP = hashlib.sha256(KEY_FAST.encode()).hexdigest()[:8]
 
 
 def rec(name, ok, detail=""):
@@ -124,10 +129,20 @@ class FakeUpstream(BaseHTTPRequestHandler):
 
     def do_POST(self):
         body = self._body()
+        case = self._case(self.path)
+        if case == "hold":
+            # gate stage only (T-3): block on HOLD_GATE until the test side
+            # releases it. Edge semantics: each set() lets exactly one hold
+            # request through, then the event re-arms (clear inside).
+            with SEEN_LOCK:
+                SEEN.append({"path": self.path, "headers": {k.lower(): v for k, v in self.headers.items()},
+                             "body": body, "hold": True, "t": time.monotonic()})
+            HOLD_GATE.wait(timeout=60)
+            HOLD_GATE.clear()
+            return self._fixed(200, json.dumps(USAGE_TAIL).encode())
         with SEEN_LOCK:
             SEEN.append({"path": self.path, "headers": {k.lower(): v for k, v in self.headers.items()},
                          "body": body})
-        case = self._case(self.path)
         if case == "sse":
             return self._sse()
         if case == "ssebreak":
@@ -215,6 +230,66 @@ def raw_chunked_request(path, body):
         out += b
     s.close()
     return out
+
+
+def read_ext():
+    c = conn()
+    c.request("GET", "/ext.json")
+    r = c.getresponse()
+    try:
+        d = json.loads(r.read())
+    except ValueError:
+        d = {}
+    c.close()
+    return d
+
+
+def wait_gate(pred, timeout=10):
+    """Poll /ext.json until the gate section satisfies pred. Pushes happen at
+    acquire/release/beat, so a fresh reading lands within one request event."""
+    end = time.monotonic() + timeout
+    g = None
+    while time.monotonic() < end:
+        g = read_ext().get("gate")
+        if g is not None and pred(g):
+            return g
+        time.sleep(0.1)
+    return g
+
+
+def seen_holds():
+    with SEEN_LOCK:
+        return [s for s in SEEN if s.get("hold")]
+
+
+def start_hold(tag, results):
+    """Fire one chat request pinned on the fake upstream (case=hold)."""
+    def run():
+        try:
+            cc = post("/v1/chat/completions?case=hold", {"model": "m", "fx": tag})
+            rr = cc.getresponse()
+            results[tag] = (rr.status, rr.read())
+            cc.close()
+        except Exception as e:
+            results[tag] = (None, str(e))
+    t = threading.Thread(target=run)
+    t.start()
+    return t
+
+
+def pin_slot(tag, held):
+    """Deterministic slot pinning: wait until the gate is clean, fire one hold,
+    return only after THAT hold reached the upstream (so it verifiably occupies
+    the only slot)."""
+    wait_gate(lambda g: g.get("inflight") == 0 and g.get("queued") == 0, timeout=15)
+    before = len(seen_holds())
+    t = start_hold(tag, held)
+    end = time.monotonic() + 10
+    while time.monotonic() < end:
+        if len(seen_holds()) > before:
+            return t
+        time.sleep(0.05)
+    return t
 
 
 def main():
@@ -433,6 +508,265 @@ def main():
         rec("every ledger row has valid fp (8 lowercase hex or none)",
             not bad_fp and all(row.get("fp") == "none" for row in none_rows),
             "rows=%d bad=%s none_rows=%d" % (len(allrows), bad_fp, len(none_rows)))
+
+        # 16. gate closed by default: /ext.json carries NO gate section (absent field)
+        ext1 = read_ext()
+        rec("gate:default no gate section in ext.json", "gate" not in ext1,
+            "gate=%s keys=%s" % (ext1.get("gate"), sorted(ext1)[:6]))
+
+        # ================= T-2 stage two: gate ON (small test values, never
+        # production defaults). Same cfg path, same lock_port, same ports.
+        cfg2 = dict(cfg)
+        cfg2["max_inflight"] = 1
+        cfg2["queue_beat_s"] = 0.4
+        cfg2["gate_wait_s"] = 1.0
+        cfg2["key_labels"] = dict(cfg.get("key_labels") or {})
+        cfg2["key_labels"][KEY_WAIT_FP] = "Gate Wait"
+        cfg2["key_labels"][KEY_FAST_FP] = "Gate Fast"
+        with open(cfg_path, "w", encoding="utf-8") as f:
+            json.dump(cfg2, f)
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        HOLD_GATE.clear()
+        proc = subprocess.Popen([sys.executable, PROXY_SCRIPT, "--config", cfg_path],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=child_env)
+        if not wait_port(PX_PORT):
+            rec("gate:proxy restarts with gate config", False, "port %d never opened" % PX_PORT)
+            bad = [n for n, ok, _ in RESULTS if not ok]
+            print("\n%d/%d PASS" % (len(RESULTS) - len(bad), len(RESULTS)))
+            return 1
+
+        # 17. 判据② limit=1: a held request pins the only slot; the second request
+        #     is queued and then gets the REAL upstream answer (never 429/409).
+        held = {}
+        tA = pin_slot("judge2", held)
+        res2 = {}
+        def second():
+            try:
+                cc = post("/v1/chat/completions?case=json", {"model": "m"})
+                rr = cc.getresponse()
+                res2["status"] = rr.status
+                res2["body"] = rr.read()
+                res2["te"] = rr.getheader("Transfer-Encoding")
+                cc.close()
+            except Exception as e:
+                res2["err"] = str(e)
+        tB = threading.Thread(target=second)
+        tB.start()
+        time.sleep(0.6)                       # the 2nd request is queued by now (queueing
+        # itself is not a push point, so no ext wait for queued here)
+        HOLD_GATE.set()                       # free the slot -> handed to the queue head
+        tB.join(timeout=10)
+        tA.join(timeout=10)
+        want = json.dumps(USAGE_TAIL).encode()
+        rec("gate:2nd request gets real upstream under limit1",
+            res2.get("status") == 200 and res2.get("body") == want
+            and res2.get("status") not in (429, 409)
+            and held.get("judge2", (None,))[0] == 200,
+            "2nd status=%s refused=%s 1st status=%s 1st unaffected=%s body==upstream:%s"
+            % (res2.get("status"), res2.get("status") in (429, 409),
+               held.get("judge2", (None,))[0],
+               held.get("judge2", (None,))[0] == 200, res2.get("body") == want))
+
+        # 18. 判据③ SSE waiting past queue_beat_s: headers + `: ping` comment frames
+        #     arrive FIRST, then the real engine stream joins the same socket.
+        held = {}
+        tA = pin_slot("judge3", held)
+        buf = []
+        def raw_sse():
+            s = socket.create_connection(("127.0.0.1", PX_PORT), timeout=20)
+            bj = json.dumps({"model": "m", "stream": True}).encode()
+            s.sendall(("POST /v1/chat/completions?case=sse HTTP/1.1\r\nHost: x\r\n"
+                       "Content-Type: application/json\r\nContent-Length: %d\r\n"
+                       "Connection: close\r\n\r\n" % len(bj)).encode() + bj)
+            try:
+                while True:
+                    b = s.recv(65536)
+                    if not b:
+                        break
+                    buf.append(b)
+            except OSError:
+                pass
+            s.close()
+        tR = threading.Thread(target=raw_sse)
+        tR.start()
+        t0sse = time.monotonic()
+        ping_seen_at = None
+        end = time.monotonic() + 3.0
+        while time.monotonic() < end:
+            bb = b"".join(buf)
+            if b": ping" in bb:
+                ping_seen_at = time.monotonic() - t0sse
+                break
+            time.sleep(0.05)
+        HOLD_GATE.set()                       # slot frees -> stream starts
+        tR.join(timeout=20)
+        tA.join(timeout=10)
+        full = b"".join(buf)
+        head = full.split(b"\r\n\r\n", 1)[0]
+        rec("gate:sse heartbeat before slot",
+            ping_seen_at is not None and head.startswith(b"HTTP/1.1 200")
+            and b"Transfer-Encoding: chunked" in head and b"text/event-stream" in head
+            and b": ping" in full and full.count(b"data: ") == 8 and b"[DONE]" in full
+            and full.find(b": ping") < full.find(b"data: ")
+            and full.count(b"HTTP/1.1 ") == 1,
+            "ttfb_ping=%ss head=%r ping_before_data=%s data_frames=%d has_DONE=%s status_lines=%d"
+            % (("%0.2f" % ping_seen_at) if ping_seen_at else "never",
+               head[:70], full.find(b": ping") < full.find(b"data: "),
+               full.count(b"data: "), b"[DONE]" in full, full.count(b"HTTP/1.1 ")))
+
+        # 19. 判据④ waited out gate_wait_s with no free slot -> still forwarded, never refused
+        held = {}
+        tA = pin_slot("judge4", held)         # slot verifiably occupied (no free slot ahead)
+        t0 = time.monotonic()
+        c = post("/v1/chat/completions?case=json", {"model": "m"})
+        r = c.getresponse(); r.read(); c.close()
+        waited = time.monotonic() - t0
+        HOLD_GATE.set()
+        tA.join(timeout=10)
+        rec("gate:gate_wait_s expiry forwards", r.status == 200 and waited >= 0.9,
+            "waited=%.2fs (gate_wait_s=1.0) status=%s refused=%s"
+            % (waited, r.status, r.status in (429, 409)))
+
+        # 20. 判据⑤ FIFO order: fa pins the slot, fb then fc queue at the gate
+        #     (serialized arrivals; beat_s=0.4 < 0.5 spacing guarantees the queue
+        #     order), slots released one at a time -> upstream arrival order ==
+        #     initiation order. A non-FIFO gate could not pass.
+        wait_gate(lambda g: g.get("inflight") == 0 and g.get("queued") == 0, timeout=10)
+        held = {}
+        order = []
+        tA = start_hold("fa", held)
+        wait_gate(lambda g: (g.get("inflight") or 0) >= 1, timeout=10)
+        hs = seen_holds()
+        # fa already reached the upstream (that is what occupies the slot): the
+        # newest SEEN hold must be fa -> first element of the arrival order
+        for tag in ("fa", "fb", "fc"):
+            if hs and b'"fx": "%s"' % tag.encode() in hs[-1]["body"]:
+                order.append(tag)
+                break
+        tB = start_hold("fb", held)
+        time.sleep(0.5)                       # fb is in the gate queue by now
+        tC = start_hold("fc", held)
+        time.sleep(0.5)                       # fc queued behind fb
+        for _ in range(2):                    # two queued waits get handed the freed slot
+            before = len(seen_holds())
+            HOLD_GATE.set()
+            end = time.monotonic() + 12
+            while time.monotonic() < end:
+                hs = seen_holds()
+                if len(hs) > before:
+                    for s in hs[before:]:
+                        for tag in ("fa", "fb", "fc"):
+                            if b'"fx": "%s"' % tag.encode() in s["body"]:
+                                order.append(tag)
+                    break
+                time.sleep(0.05)
+        HOLD_GATE.set()                       # release the last in-flight hold
+        for t in (tA, tB, tC):
+            t.join(timeout=15)
+        g = wait_gate(lambda g: g.get("inflight") == 0 and g.get("queued") == 0, timeout=10)
+        ok = order == ["fa", "fb", "fc"]
+        rec("gate:fifo order preserved", ok,
+            "arrival_order=%s initiation_order=[fa, fb, fc] final=%s"
+            % (order, {k: (g or {}).get(k) for k in ("inflight", "queued")}))
+
+        # 21. 判据⑥ failure injections must not leak slots
+        wait_gate(lambda g: g.get("inflight") == 0 and g.get("queued") == 0, timeout=10)
+        infl = []
+        c = post("/v1/chat/completions?case=500", {"model": "m"})
+        r = c.getresponse(); r.read(); c.close()
+        g = wait_gate(lambda g: g.get("inflight") == 0, timeout=10)
+        infl.append((g or {}).get("inflight"))
+        c = post("/v1/chat/completions?case=ssebreak", {"model": "m", "stream": True})
+        r = c.getresponse()
+        try:
+            r.read()
+        except Exception:
+            pass
+        c.close()
+        g = wait_gate(lambda g: g.get("inflight") == 0, timeout=10)
+        infl.append((g or {}).get("inflight"))
+        c = post("/v1/chat/completions?case=sse", {"model": "m", "stream": True})
+        c.getresponse()
+        c.close()                              # client hangs up immediately
+        g = wait_gate(lambda g: g.get("inflight") == 0, timeout=10)
+        infl.append((g or {}).get("inflight"))
+        rec("gate:no slot leak after failures", infl == [0, 0, 0],
+            "inflight after upstream500 / ssebreak / client-disconnect = %s" % infl)
+
+        # 22. 判据⑦ non-chat paths never gated: gate open AND saturated, then gate
+        #     closed — both readings must show immediate answers and queued==0.
+        held = {}
+        tA = pin_slot("judge7", held)
+        t0 = time.monotonic()
+        c = conn(); c.request("GET", "/v1/models"); r = c.getresponse(); r.read(); c.close()
+        dt_get = time.monotonic() - t0
+        t0 = time.monotonic()
+        c = post("/v1/embeddings?case=echo", {"input": "hi"})
+        r2 = c.getresponse(); r2.read(); c.close()
+        dt_emb = time.monotonic() - t0
+        g_open = read_ext().get("gate") or {}
+        HOLD_GATE.set()
+        tA.join(timeout=10)
+        wait_gate(lambda g: g.get("inflight") == 0, timeout=10)
+        # counter-example with the gate closed: rewrite the SAME cfg path (per-request
+        # re-read means this takes effect without a restart) and repeat the probes
+        with open(cfg_path, "w", encoding="utf-8") as f:
+            json.dump(cfg, f)
+        t0 = time.monotonic()
+        c = conn(); c.request("GET", "/v1/models"); r3 = c.getresponse(); r3.read(); c.close()
+        dt_get_off = time.monotonic() - t0
+        t0 = time.monotonic()
+        c = post("/v1/embeddings?case=echo", {"input": "hi"})
+        r4 = c.getresponse(); r4.read(); c.close()
+        dt_emb_off = time.monotonic() - t0
+        rec("gate:non-chat never gated",
+            r.status == 200 and r2.status == 200 and r3.status == 200 and r4.status == 200
+            and max(dt_get, dt_emb) < 0.9 and max(dt_get_off, dt_emb_off) < 0.9
+            and (g_open.get("queued") or 0) == 0,
+            "gate ON + saturated: GET %.2fs POST %s %.2fs gate.queued=%s | gate OFF: GET %.2fs POST %.2fs"
+            % (dt_get, "embeddings", dt_emb, g_open.get("queued"), dt_get_off, dt_emb_off))
+        with open(cfg_path, "w", encoding="utf-8") as f:
+            json.dump(cfg2, f)
+
+        # 23. 判据⑧ queue_wait_ms: written only for requests that actually waited
+        held = {}
+        tA = pin_slot("judge8", held)         # slot occupied -> the next request must wait
+        c = post("/v1/chat/completions?case=json", {"model": "m"},
+                 {"Authorization": "Bearer %s" % KEY_WAIT})
+        r = c.getresponse(); r.read(); c.close()   # waited, then gate_wait_s expiry
+        HOLD_GATE.set()
+        tA.join(timeout=10)
+        wait_gate(lambda g: g.get("inflight") == 0, timeout=10)
+        c = post("/v1/chat/completions?case=json", {"model": "m"},
+                 {"Authorization": "Bearer %s" % KEY_FAST})
+        r = c.getresponse(); r.read(); c.close()   # slot free: never waited
+        rows = []
+        for _ in range(40):                        # poll until the last row landed
+            rows = ledger(tmp)
+            if any(x.get("fp") == KEY_FAST_FP for x in rows):
+                break
+            time.sleep(0.1)
+        wrow = next((x for x in rows if x.get("fp") == KEY_WAIT_FP), None)
+        frow = next((x for x in rows if x.get("fp") == KEY_FAST_FP), None)
+        ledger_path = os.path.join(tmp, "requests-%s.jsonl" % time.strftime("%Y-%m-%d"))
+        rec("gate:queue_wait_ms written only when waited",
+            wrow is not None and wrow.get("queue_wait_ms", -1) >= 0
+            and frow is not None and "queue_wait_ms" not in frow,
+            "ledger=%s waited row fp=%s queue_wait_ms=%s | unwaited row fp=%s has field=%s"
+            % (ledger_path, KEY_WAIT_FP, wrow.get("queue_wait_ms") if wrow else None,
+               KEY_FAST_FP, "queue_wait_ms" in (frow or {})))
+
+        # 24. /ext.json gate section shape (five keys, limit echoed back)
+        g = wait_gate(lambda g: set(g) >= {"inflight", "queued", "limit",
+                                           "waited_total", "beat_total"}, timeout=10)
+        rec("gate:ext.json gate section shape",
+            g is not None and set(g) >= {"inflight", "queued", "limit", "waited_total", "beat_total"}
+            and g.get("limit") == 1,
+            "gate=%s" % g)
 
         bad = [n for n, ok, _ in RESULTS if not ok]
         print("\n%d/%d PASS" % (len(RESULTS) - len(bad), len(RESULTS)))

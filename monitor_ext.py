@@ -72,6 +72,27 @@ GPU_QUERY = (
 GPU_FIELDS = 18
 GPU_INTERVAL = 2.0                     # nvidia-smi costs ~150 ms; 2 s is plenty
 
+# ---- gate observation channel (rev10): the proxy pushes snapshots, the
+# sampler merges them into /ext.json. No push ever = the "gate" field is
+# simply absent (existing frontends and selftests tolerate that). ----
+_GATE_LOCK = threading.Lock()
+_GATE_STATE = None
+
+
+def push_gate(state: dict):
+    try:
+        with _GATE_LOCK:
+            global _GATE_STATE
+            _GATE_STATE = dict(state)
+            _GATE_STATE["_at"] = time.time()
+    except Exception:
+        pass                           # observation must never break accounting
+
+
+def get_gate():
+    with _GATE_LOCK:
+        return _GATE_STATE
+
 
 class PdhClock:
     r"""Task-Manager-equivalent real-time CPU clock (2026-11-17, user rule).
@@ -537,6 +558,11 @@ class Sampler(threading.Thread):
                 out["pcie_txrx_supported"] = bool(getattr(self, "_txrx", None))
         out["gpus"] = self._gpus
         out["gpu_query_fields"] = GPU_FIELDS
+        # gate 段（rev10）：proxy 侧 push 过且仍新鲜（30s 内）才出；否则字段整体缺席
+        g = get_gate()
+        if g is not None and now - g.get("_at", 0) <= 30:
+            out["gate"] = {k: g[k] for k in ("inflight", "queued", "limit",
+                                             "waited_total", "beat_total") if k in g}
         with self.lock:
             self.data = out
 

@@ -482,6 +482,21 @@
     }
   }
 
+  // ================= 网关排队闸「等待中」卡（/ext.json gate 段；rev10） =================
+  // queued==0（含字段缺席）→ 不渲染＋清旧卡：本包无排队态时页面上不得出现
+  // 排队卡（引擎原生 queued 语义在状态卡里，两语义分卡分文案，互不混淆）。
+  function renderGate(ext) {
+    const host = $("metrics");
+    if (!host) return;
+    const g = ext && ext.gate;
+    if (!g || !(g.queued > 0)) { pruneSection(host, "gate", new Set()); return; }
+    const id = "card-gate";
+    ensure(host, id, cardHtml(id, "gate", "等待中", { icon: "activity", tone: "info" }));
+    const v = $(id + "-v");
+    if (v) v.innerHTML = `${fmt(g.queued)}<small> 个</small>`;
+    setSub(id + "-s", `网关等待 · 在飞 ${fmt(g.inflight)}/${fmt(g.limit)}`);
+  }
+
   // ================= 每物理硬盘卡（/ext.json；读=绿 写=橙，波形双色） =================
   const RW_DOWN = "#10b981";   // 读 / 下行
   const RW_UP = "#f59e0b";     // 写 / 上行
@@ -729,6 +744,7 @@
       pruneSection(host, "gpu", new Set());
       pruneSection(host, "disk", new Set());
       pruneSection(host, "net", new Set());
+      pruneSection(host, "gate", new Set());
       const ramEl = document.getElementById("card-ram");
       if (ramEl) ramEl.remove();
     }
@@ -740,6 +756,7 @@
     }
     if (ext) {
       renderRam(ext);
+      renderGate(ext);
       renderDisks(ext);
       renderNet(ext);
     }
