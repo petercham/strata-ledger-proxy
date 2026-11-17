@@ -318,7 +318,7 @@
 | `monitor.js` | `renderCpu` 顶部构 `cpuLabel`（`CPU · esc(cpu_name)`，无字段保持 `CPU`）+ `setCpuTitle`（查 `.mx-label-t` 幂等刷新）；两分支 `ensure(...)` 外包 `setCpuTitle(...)` | ensure 只在首建写标题，ext.json 晚到需补写；esc 走转义链（型号名可含任意字符） |
 | `selftest_monitor.py` | 冒烟 stub ext 喂 `cpu_name: "Smoke CPU Model <x>"` + `cpu_mhz`；新增两条断言（标题两分支逐字节＋幂等刷新在位＋裸标题 `cardHtml(id, "cpu", "CPU",` 永不复活反例守卫；采样端四源锁）；当次 **52/52** | 锁终态＋防旧形态回魂 |
 
-**在岗换脑实况（如实登记）**：三文件已同步在岗位（cmp 字节级一致）；`switch_proxy.py` 当轮读到 2 条 ESTABLISHED idle 连接 → **硬拒绝未 force**，换脑待静默窗口。在岗 ext 读数当前无 `cpu_name`（旧进程未换脑），换脑后自动出现。
+**在岗换脑实况（如实登记）**：三文件已同步在岗位（cmp 字节级一致）；第一轮 `switch_proxy.py` 读到 2 条 ESTABLISHED idle 连接 → 硬拒绝未 force。第二轮（17:41，操作会话处工具段、无在飞生成的安全窗）`--force` 切换成功：1.52 秒回岗、新 pid 38164、`/health` 200；`/ext.json` 出 `cpu_name: "AMD Ryzen 9 7950X 16-Core Processor"` + `cpu_mhz` 正常。前端实拍复核：CPU 卡标题 `CPU · AMD Ryzen 9 7950X 16-Core Processor`，一行不撑。README 硬件区截图同步刷新（commit 8ccba89）。
 
 ---
 ## 三、如实登记：代码分叉

@@ -9,7 +9,7 @@
 - **采样端**：`monitor_ext.py` 新增 `cpu_name()`——Windows 走注册表 `ProcessorNameString`（与任务管理器显示同源），Linux 走 `/proc/cpuinfo` 的 `model name`；纯标准库、静态读一次进缓存；多余空格折叠、64 字符截断、任何失败返回空串——**采不到就保持光 "CPU" 标题，绝不编名字**。字段进 `/ext.json` 为 `cpu_name`。
 - **前端**：CPU 卡（单插槽与多插槽两分支）标题变 `CPU · 型号`；`ensure` 只在卡片首建时写标题，而 `/ext.json` 可能晚于 `/metrics` 到——label 节点每拍**幂等刷新**补齐。型号过长进 `mx-label-t` 一行省略号口径，不撑卡。
 - **selftest** 52/52（新增两条：标题两分支+幂等刷新+裸标题永不复活的反例守卫；采样端源锁〔注册表键/proc 路径/空格折叠/截断〕）；proxy 22/22、watchdog 16/16 不变。node 冒烟 stub 喂含 `<x>` 的型号名走 `esc` 转义链。
-- 在岗换脑走 `switch_proxy.py`：当轮判有 2 条 idle 连接**硬拒绝**，未 `--force`——待静默窗口再切（纪律优先于便利）。
+- 在岗换脑走 `switch_proxy.py`：第一轮判有 2 条 idle 连接**硬拒绝**未 force（纪律优先于便利）；第二轮在操作会话处工具段、无在飞生成的安全窗 `--force` 切成——1.52 秒回岗、`/ext.json` 出 `cpu_name`（AMD Ryzen 9 7950X 16-Core Processor）、前端实拍确认标题一行不撑。README 硬件区截图同步刷新为带型号版。
 
 ---
 
