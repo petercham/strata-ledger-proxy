@@ -336,6 +336,19 @@
 
 **脱敏实证**：csv 全部为公开牌价与厂商官方页出处，0 处内部数据；截图裁切区为价格折算表＋通用 KPI 条（请求数/解码 tok/s/tokens 总量），无人名、无指纹、无 key、无 IP。截图生成于临时合并盒（`calcbox`，35 天旧链+新链账本合并出表），在岗 `data/` 未动。
 
+### 2.18 rev8 后补六：README 边界条改写＋看护声明补核对出处（2026-11-17 · 纯文档）
+
+背景：皮总两点质疑。①「官方壳自带引擎看护」是否属实、有没有和上游核对过——此前确实未核对过，本轮补核：本机 `D:/Strata` 即上游仓（github.com/Niko1221/Strata），HEAD 钉 tag `v0.2.6`，用 `git show HEAD:serve/server.py` 读 pristine blob（工作区 1700+ 行本地改动均未提交，不构成干扰）。官方 blob 实有 `restart(tries=3)`、`RESTART_RETRY_S=15.0`、`ENGINE_SILENCE_S=300.0`（#481）、#1317 quick watchdog 注释、官方跟踪的 `test_fatal_recovery.py`/`test_restart_waiters.py`/`serve/lifeline.py`。声明属实，README 该句补上出处口径。如实窄口径：origin/main 领先基线数百 commit，GitHub 通路当时 502 未核——README 所述针对包所依赖的发布基线，成立。
+②「非流式长请求仍会静默」列为本包边界不当——本包定位＝对体验零改变、只加细粒度记账；长生成期连接无字节是**非流式协议本性**，不接反代同样存在，不应进本包代价清单。
+
+| 文件 | 改动 | 为什么 |
+|---|---|---|
+| `README.md` 第九节第 2 条 | 改写为「不改变任何使用体验＋协议物理现象不归本工具背」口径；≥600 秒读超时建议保留但定性为对所有链路成立的环境建议 | 边界清单只登记本工具引入的代价，不替协议本性背锅 |
+| `README.md` 第八节看护划界段 | 补「已对上游核对属实」＋pristine v0.2.6 的具体符号名与 issue 号 | 声明可核、出处随身 |
+
+功能代码零改动。
+
+
 ## 三、如实登记：代码分叉
 
 这套脚本与 5090 工具包里的 `skill-token-ledger/scripts/collector_proxy.py`（母本，260 行）**不是同一份文件**：
