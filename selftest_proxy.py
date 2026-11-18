@@ -14,6 +14,7 @@ leave exactly one correct ledger row. It also pins key attribution: the
 Bearer auth-scheme is case-insensitive and every row keeps its raw 8-hex fp.
 """
 import gzip
+import glob
 import hashlib
 import http.client
 import json
@@ -48,6 +49,12 @@ KEY_3RD = "sk-gate-3rd-marker"         # rev11 T-4 A1: marker for the queued 3rd
 KEY_3RD_FP = hashlib.sha256(KEY_3RD.encode()).hexdigest()[:8]
 KEY_3DROP = "sk-gate-3rd-drop-marker"  # rev11 T-4 A3: marker for the disconnected queued stream's row
 KEY_3DROP_FP = hashlib.sha256(KEY_3DROP.encode()).hexdigest()[:8]
+KEY_GE1 = "sk-gate-log-stream-marker"   # rev12: gate-events stream marker
+KEY_GE2 = "sk-gate-log-json-marker"     # rev12: gate-events forced (non-stream) marker
+KEY_GE3 = "sk-gate-log-admit-marker"    # rev12: gate-events admitted (fast-path) marker
+KEY_GE1_FP = hashlib.sha256(KEY_GE1.encode()).hexdigest()[:8]
+KEY_GE2_FP = hashlib.sha256(KEY_GE2.encode()).hexdigest()[:8]
+KEY_GE3_FP = hashlib.sha256(KEY_GE3.encode()).hexdigest()[:8]
 # ---- rev11 T-0 stub state / rev11a X-5 降形: fake engine /v1/status counter ----
 # X-5: the STATUS_MODE/STATUS_SERVING state machine is deleted (its reading
 # source — the rev11 runtime polling — is retired by INTK-0003). The counter
@@ -333,6 +340,20 @@ def find_row(tmp, fp, timeout=3.0):
         if row is not None or time.monotonic() >= end:
             return row
         time.sleep(0.1)
+
+
+def gate_events(tmp):
+    rows = []
+    for p in glob.glob(os.path.join(tmp, "gate-events-*.jsonl")):
+        for line in open(p, encoding="utf-8"):
+            rows.append(json.loads(line))
+    return rows
+
+
+# rev12 gate-events closed field set (G-A/G-D share) + separation keys (红线六)
+GEV_FIELDS = {"ts", "event", "seq", "route", "model", "key", "fp", "limit",
+              "stream", "waited_ms", "heartbeats", "forced", "inflight_at_decision"}
+GEV_SEP_KEYS = ("event", "seq", "inflight_at_decision", "heartbeats", "forced")
 
 
 def start_hold(tag, results):
@@ -706,6 +727,16 @@ def main():
         rec("gate:default no gate section in ext.json", "gate" not in ext1,
             "gate=%s keys=%s" % (ext1.get("gate"), sorted(ext1)[:6]))
 
+        # 16c. rev12 G-C: gate OFF across the whole T-1 stage -> the dedicated
+        #      gate-events log has ZERO files (Recorder never created one),
+        #      while the requests ledger is present as the control reading.
+        ge_files = glob.glob(os.path.join(tmp, "gate-events-*"))
+        req_files = glob.glob(os.path.join(tmp, "requests-*.jsonl"))
+        rec("gate:gate-events no file with gate off",
+            not ge_files and bool(req_files),
+            "gate_events_files=%s requests_files=%s tmp=%s"
+            % (ge_files, [os.path.basename(p) for p in req_files], tmp))
+
         # 16b. rev11 T-2 (1) 判据③-4: default cfg (NO gate_follow key) -> the
         #      gate-follow thread polls nothing. Stub-side counter is the proof:
         #      zero /v1/status GETs across the whole default stage.
@@ -722,6 +753,9 @@ def main():
         cfg2["key_labels"] = dict(cfg.get("key_labels") or {})
         cfg2["key_labels"][KEY_WAIT_FP] = "Gate Wait"
         cfg2["key_labels"][KEY_FAST_FP] = "Gate Fast"
+        cfg2["key_labels"][KEY_GE1_FP] = "Gate Log Stream"
+        cfg2["key_labels"][KEY_GE2_FP] = "Gate Log Json"
+        cfg2["key_labels"][KEY_GE3_FP] = "Gate Log Admit"
         with open(cfg_path, "w", encoding="utf-8") as f:
             json.dump(cfg2, f)
         proc.terminate()
@@ -958,6 +992,144 @@ def main():
             "ledger=%s waited row fp=%s queue_wait_ms=%s | unwaited row fp=%s has field=%s"
             % (ledger_path, KEY_WAIT_FP, wrow.get("queue_wait_ms") if wrow else None,
                KEY_FAST_FP, "queue_wait_ms" in (frow or {})))
+
+        # ================================================================
+        # rev12 gate-events assertions (G-A/G-B/G-D). Each stage restores cfg2
+        # on exit (rev10a discipline). Dedicated marker keys KEY_GE1/GE2/GE3 —
+        # KEY_FAST/KEY_WAIT/KEY_3RD must NOT be reused here: assertions 23 and
+        # the T-4 family already produced gate-ON rows under those keys, and
+        # gate-events is counted per fp (Q-1 collision fix, v3).
+        # ================================================================
+
+        # ---- G-A: queued line is on disk WHILE the request still queues ----
+        cfg_ga = dict(cfg2)
+        cfg_ga["gate_wait_s"] = 8.0                  # no expiry-forced forward in the window
+        with open(cfg_path, "w", encoding="utf-8") as f:
+            json.dump(cfg_ga, f)
+        held = {}
+        tA = pin_slot("gehold", held)                # limit=1: the only slot is pinned
+        box_ge = {}
+        tG = fire_raw_stream("/v1/chat/completions?case=sse",
+                             {"model": "m", "stream": True}, KEY_GE1, box_ge)
+        wait_gate(lambda g: (g.get("queued") or 0) >= 1, timeout=3.0)
+        q_row = None
+        endq = time.monotonic() + 3.0
+        while time.monotonic() < endq:
+            rows_ge = gate_events(tmp)
+            q_row = next((r for r in rows_ge
+                          if r.get("fp") == KEY_GE1_FP and r.get("event") == "queued"), None)
+            if q_row is not None:
+                break
+            time.sleep(0.05)
+        rows_at = gate_events(tmp) if q_row is not None else []
+        rel_at_check = [r for r in rows_at
+                        if r.get("fp") == KEY_GE1_FP and r.get("event") == "released"]
+        hold_set_at_check = HOLD_GATE.is_set()       # still queued: release is NOT due yet
+        closed_ok = q_row is not None and set(q_row) <= GEV_FIELDS
+        decision_ok = (q_row or {}).get("inflight_at_decision") == 1 and (q_row or {}).get("limit") == 1
+        route_ok = (q_row or {}).get("route") == "/v1/chat/completions"
+        led_sep_ok = not any(k in row for row in ledger(tmp) for k in GEV_SEP_KEYS)
+        endp = time.monotonic() + 0.8                # >=1 ping frame arrives (T-4 A1 window)
+        while time.monotonic() < endp:
+            if len(box_ge.get("pings") or []) >= 1:
+                break
+            time.sleep(0.05)
+        HOLD_GATE.set()                              # release -> queued stream completes
+        tG.join(timeout=25)
+        tA.join(timeout=15)
+        r_row = None
+        endr = time.monotonic() + 8.0
+        while time.monotonic() < endr:
+            r_row = next((r for r in gate_events(tmp)
+                          if r.get("fp") == KEY_GE1_FP and r.get("event") == "released"), None)
+            if r_row is not None:
+                break
+            time.sleep(0.1)
+        seq_ok = (q_row is not None and r_row is not None
+                  and r_row.get("seq") == q_row.get("seq"))
+        rel_ok = (r_row is not None and r_row.get("forced") is False
+                  and (r_row.get("heartbeats") or 0) >= 1 and (r_row.get("waited_ms") or 0) >= 400)
+        rec("gate:gate-events queued line visible while still queued",
+            q_row is not None and not rel_at_check and not hold_set_at_check
+            and closed_ok and decision_ok and route_ok and led_sep_ok
+            and seq_ok and rel_ok,
+            "queued=%s released_at_check=%s hold_set_at_check=%s closed=%s decision(inflight_at_decision=%s limit=%s)=%s route_ok=%s ledger_sep=%s released=%s seq_match=%s"
+            % (q_row, rel_at_check, hold_set_at_check, closed_ok,
+               (q_row or {}).get("inflight_at_decision"), (q_row or {}).get("limit"), decision_ok,
+               route_ok, led_sep_ok, r_row, seq_ok))
+        with open(cfg_path, "w", encoding="utf-8") as f:   # self-restore (rev10a discipline)
+            json.dump(cfg2, f)
+
+        # ---- G-B: forced released line on gate_wait_s expiry (non-stream) ----
+        held = {}
+        tA = pin_slot("gehold2", held)               # hold stays pinned until assertion end
+        res_gb = {}
+        def gb_reader():
+            try:
+                cc = post("/v1/chat/completions?case=json", {"model": "m"},
+                          {"Authorization": "Bearer %s" % KEY_GE2})
+                rr = cc.getresponse()
+                res_gb["status"] = rr.status
+                rr.read()
+                cc.close()
+            except Exception as e:
+                res_gb["err"] = str(e)
+        tB = threading.Thread(target=gb_reader, daemon=True)
+        tB.start()                                   # queued; waits out gate_wait_s=1.0, forced
+        tB.join(timeout=15)
+        rel_gb, q_gb = None, None
+        endr = time.monotonic() + 8.0
+        while time.monotonic() < endr:
+            rows_gb = gate_events(tmp)
+            q_gb = [r for r in rows_gb if r.get("fp") == KEY_GE2_FP and r.get("event") == "queued"]
+            rel_gb = next((r for r in rows_gb
+                           if r.get("fp") == KEY_GE2_FP and r.get("event") == "released"), None)
+            if rel_gb is not None:
+                break
+            time.sleep(0.1)
+        q_idx = [i for i, r in enumerate(gate_events(tmp))
+                 if r.get("fp") == KEY_GE2_FP and r.get("event") == "queued"]
+        r_idx = next((i for i, r in enumerate(gate_events(tmp))
+                      if r.get("fp") == KEY_GE2_FP and r.get("event") == "released"), -1)
+        rec("gate:gate-events forced line on gate_wait_s expiry",
+            len(q_gb) == 1 and rel_gb is not None and q_idx[0] < r_idx
+            and rel_gb.get("forced") is True and (rel_gb.get("waited_ms") or 0) >= 900
+            and rel_gb.get("heartbeats") == 0 and rel_gb.get("stream") is False
+            and res_gb.get("status") == 200,
+            "status=%s queued_rows=%d queued_idx=%s released_idx=%s released=%s"
+            % (res_gb.get("status"), len(q_gb), q_idx, r_idx, rel_gb))
+        HOLD_GATE.set()                              # release the pinned hold (红线二 safe)
+        tA.join(timeout=15)
+
+        # ---- G-D: admitted line carries the fast-path decision reading ----
+        wait_gate(lambda g: (g.get("inflight") or 0) == 0 and (g.get("queued") or 0) == 0,
+                  timeout=15)                        # gate clean before the fast-path fire
+        c3 = post("/v1/chat/completions?case=json", {"model": "m"},
+                  {"Authorization": "Bearer %s" % KEY_GE3})
+        r3 = c3.getresponse(); r3.read(); c3.close() # empty slot: fast path, never queued
+        adm = []
+        endr = time.monotonic() + 8.0
+        while time.monotonic() < endr:
+            adm = [r for r in gate_events(tmp)
+                   if r.get("fp") == KEY_GE3_FP and r.get("event") == "admitted"]
+            if adm:
+                break
+            time.sleep(0.1)
+        qr_ge3 = [r for r in gate_events(tmp)
+                  if r.get("fp") == KEY_GE3_FP and r.get("event") in ("queued", "released")]
+        adm_closed = all(set(r) <= GEV_FIELDS for r in adm)
+        adm_decision = (len(adm) == 1 and adm[0].get("inflight_at_decision") == 0
+                        and adm[0].get("limit") == 1)
+        ge3_row = find_row(tmp, KEY_GE3_FP, timeout=8.0)
+        ge3_sep_ok = ge3_row is not None and not any(k in ge3_row for k in GEV_SEP_KEYS)
+        led_sep2_ok = not any(k in row for row in ledger(tmp) for k in GEV_SEP_KEYS)
+        rec("gate:gate-events admitted line carries decision reading",
+            adm_decision and not qr_ge3 and adm_closed and ge3_sep_ok and led_sep2_ok,
+            "admitted=%s closed=%s decision(inflight_at_decision=%s limit=%s)=%s queued/released=%s ge3_row_sep_ok=%s ledger_scan_sep=%s"
+            % (adm, adm_closed,
+               adm[0].get("inflight_at_decision") if adm else None,
+               adm[0].get("limit") if adm else None, adm_decision,
+               qr_ge3, ge3_sep_ok, led_sep2_ok))
 
         # 24. /ext.json gate section shape (five keys, limit echoed back)
         g = wait_gate(lambda g: set(g) >= {"inflight", "queued", "limit",

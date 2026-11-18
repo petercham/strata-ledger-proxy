@@ -4,6 +4,15 @@
 
 ---
 
+## 2026-11-18（rev12）· 排队闸拦截事件独立日志：每个入栈请求留「核实在飞＋放行决策」证据，与记账账本严格分离（功能新增 · 三套全绿）
+
+- **现象**：闸按 limit 守住路数时，「拦截真实发生」只在总账请求行 `queue_wait_ms` 字段＋ext.json 瞬时快照里体现，不成事件流——快照回答「此刻有没有人排队」，回答不了「今天拦了几次、拦了谁、等了多久、有没有等死被强发」，更证明不了「每次入栈请求网关都核实过在飞数并做过放行/排队决策」。人类 08:02 令（INTK-0005 逐字）：「如果真实出现了拦截，我希望你能够做成独立的日志」；08:04 补令（续 INTK-0005）：「让我能够确定，你对每次入栈请求都做到了核实在飞进程并决策是否放行，不要和记账日志放在一起」。
+- **改动**：新独立事件日志 `data/gate-events-YYYY-MM-DD.jsonl`（Recorder 加 `prefix` 参复用总账同族机制＝按天分文件、append-only、line-buffered、行锁纪律、构造不建文件）。三形态闭集：快路 `admitted` 一行（含临界区内 `inflight_at_decision` 读数＋`limit` 快照）；被拦 `queued`（进闸瞬间，含当次读数）＋`released`（放行/强发，含 `waited_ms`/`heartbeats` 实发帧数/`forced` 强发可辨识）。决策读点写死＝`Gate.acquire` 临界区内取局部量（快路在 `inflight += 1` 前、入队同锁内），发事件一律 off-lock（写盘 I/O 禁入锁）。挂点＝acquire 尾参 `on_event`（默认 None 既有调用零改）＋Handler `_gate_event` 闭包＋`key_identity` 上提复用（同请求值逐位相同）。`main()` 挂 `Handler.gate_rec = Recorder(out, "gate-events")`——闸关 acquire 不跑＝零事件零文件零新字节（缺省零回归红线）。**红线六（补令字面）＝记账/决策分离**：`event/seq/inflight_at_decision/heartbeats/forced` 禁入 `requests-*.jsonl` 键面，总账 rec 字典零新增键（机检 diff `rec[` 加行＝0＋断言内总账 scan）；`queue_wait_ms` 保留不动、双写互证、事件日志＝拦截/决策查证权威源。隐私闭集：三形态字段写死＋禁记请求体内容（可辨识面＝route/model/key/fp 同总账口径）。无新配置键（闸开才有事件，加开关＝加死面）。
+- **闸核心冻结（`git diff -w` token 闭集口径）**：`inflight`/`_waiters`/`_seq`/`queued`/`waited_total`/`beat_total`/`_cond.wait|notify`/`release()`/`snapshot()` 全部 token 行零改动（±行＝0）；唯一被允许的语义面触碰＝快路 `return 0` 改「锁内读点→出锁发 admitted→return 0」（返回值/返回条件/快路零等待不变，补令语义所迫）；`acquire` 返回类型仍 `-> int`。防误杀族四断言零改动在场（族面 diff 零行＋逐名 PASS）；既有 41 断言零作废、零删除行。
+- **selftest**：proxy 41→**45/45**（只增不减）；新四断言 `gate:gate-events queued line visible while still queued`（排队中 queued 行已在盘＝「进闸即写」行为证＋决策读数 1/1＋分离 scan）／`gate:gate-events forced line on gate_wait_s expiry`（强发态 forced=True/waited≥900/heartbeats=0 非流式实发口径＋行序 queued<released）／`gate:gate-events no file with gate off`（T-1 全程闸关零 gate-events 文件，总账在场作对照）／`gate:gate-events admitted line carries decision reading`（直放留痕 0/1＝「核实到有空位才直放」）；`grep -c '^PASS  gate:'`＝**23**（基线 19＋新 4）；新标记键三枚 KEY_GE1/GE2/GE3 专用（禁复用 KEY_FAST/KEY_WAIT/KEY_3RD——QA 票前审 D-1 撞计数案）。monitor **54/54**、watchdog **16 passed 0 failed** 零触碰原样通过。红线机检：`urlopen`=3、`threading.Thread`=1、Lock=1、Condition=1 逐值不变；`(429|409)`=0；`queue_wait_ms`=1 且 diff ±行=0；冻结 token ±行=0；`rec[` 加行=0。MANIFEST 2.23。监视页/日报消费 gate-events 日志＝另票后置；在岗换脑＝主理人另排安全窗口。
+
+---
+
 ## 2026-11-18（rev11a）· 排队闸跟随形态回流：读数源从引擎运行时轮询改为启动配置文件定死值（口径变更回流 · 三套全绿）
 
 - **现象**：rev11 的跟随实现是网关后台线程周期 GET 上游 `/v1/status` 读引擎**运行时**并发（含 `fit_parallel` 显存降级后的真实槽数）。人类 23:13 裁定驳回该口径（INTK-0003 逐字）：「引擎侧自己往下压和网关有什么关系？网关只负责卡住上限，引擎自己爱干什么干什么！」——跟随运行时值＝网关职权越界（卡上限≠跟降级）。

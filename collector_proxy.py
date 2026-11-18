@@ -107,8 +107,9 @@ def load_config(path):
 
 
 class Recorder:
-    def __init__(self, out_dir):
+    def __init__(self, out_dir, prefix="requests"):
         self.dir = out_dir
+        self.prefix = prefix
         self.lock = threading.Lock()
         self.day = None
         self.f = None
@@ -122,7 +123,7 @@ class Recorder:
                         self.f.close()
                     except OSError:
                         pass
-                self.f = open(os.path.join(self.dir, f"requests-{day}.jsonl"), "a", encoding="utf-8", buffering=1)
+                self.f = open(os.path.join(self.dir, f"{self.prefix}-{day}.jsonl"), "a", encoding="utf-8", buffering=1)
                 self.day = day
             self.f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
@@ -141,18 +142,33 @@ class Gate:
         self.waited_total = 0                 # ms accumulated across waited requests
         self.beat_total = 0                   # heartbeat frames ever emitted
 
-    def acquire(self, limit, beat_s, wait_s, on_beat=None) -> int:
+    def acquire(self, limit, beat_s, wait_s, on_beat=None, on_event=None) -> int:
         """Take a slot; return this request's waited ms (0 = never waited).
         Called only when limit > 0. Never rejects: after wait_s the request
-        is forwarded anyway (worst case = today's behaviour)."""
+        is forwarded anyway (worst case = today's behaviour).
+
+        rev12: on_event (default None = existing callers unchanged) receives
+        one decision line per enrolment — "admitted" on the fast path, then
+        "queued" + "released" for waited requests. The decision readings
+        (inflight_at_decision) are taken INSIDE the _cond critical section,
+        at the very instant the admission decision is made; the event lines
+        themselves are emitted OFF-LOCK only (same discipline as on_beat —
+        write I/O never runs under the lock). A callback that raises is
+        swallowed: a lost event line never blocks the relay nor aborts the
+        wait."""
         t0 = time.monotonic()
         deadline = t0 + wait_s
         next_beat = t0 + beat_s
         my = None
+        forced = False
+        beats = 0
+        enq_at = None
         while True:
             outcome = None                    # "granted" / "expired" / None=keep waiting
             beat_now = False
             enqueued_now = False
+            fast_admit = False
+            adm_at = None
             # Critical section 1 (enrol): first pass only — fast path, or join
             # the queue once. The `my is None` guard preserves the original
             # structure exactly: on a beat-restart pass this section is a
@@ -160,19 +176,35 @@ class Gate:
             with self._cond:
                 if my is None:
                     if self.inflight < limit:         # fast path: a free slot
+                        adm_at = self.inflight        # rev12: decision reading IN the lock
                         self.inflight += 1
-                        return 0
-                    my = [self._seq, False]
-                    self._seq += 1
-                    self._waiters.append(my)
-                    self.queued += 1
-                    enqueued_now = True
+                        fast_admit = True
+                    else:
+                        my = [self._seq, False]
+                        self._seq += 1
+                        self._waiters.append(my)
+                        self.queued += 1
+                        enqueued_now = True
+                        enq_at = self.inflight        # rev12: reading at enrolment instant
+            if fast_admit:
+                if on_event:
+                    try:
+                        on_event({"event": "admitted", "inflight_at_decision": adm_at})
+                    except Exception:
+                        pass                          # a lost event line never blocks the relay
+                return 0
             # rev10a E-2: one enqueue push OUTSIDE the Condition lock (same
             # off-lock discipline as on_beat), at the instant of enrolment,
             # before the first _cond.wait — so /ext.json gate.queued stops
             # lagging up to queue_beat_s. Fast path never reaches here.
             if enqueued_now:
                 _push_gate(self)
+                if on_event:
+                    try:
+                        on_event({"event": "queued", "seq": my[0],
+                                  "inflight_at_decision": enq_at})
+                    except Exception:
+                        pass                          # a lost event line never aborts the wait
             # Critical section 2 (wait): re-enter the lock for the wait loop.
             with self._cond:
                 while True:
@@ -194,6 +226,7 @@ class Gate:
                             pass
                         self.inflight += 1            # deliberate over-run: never reject
                         outcome = "expired"
+                        forced = True
                         break
                     timed_out = not self._cond.wait(timeout=min(beat_s, remaining))
                     if not my[1] and timed_out and time.monotonic() >= next_beat:
@@ -205,6 +238,7 @@ class Gate:
                 if on_beat:
                     try:
                         on_beat()
+                        beats += 1
                     except Exception:
                         pass                          # a lost heartbeat never aborts the wait
                 with self._cond:
@@ -215,6 +249,13 @@ class Gate:
         if waited_ms > 0:
             with self._cond:
                 self.waited_total += waited_ms
+        if my is not None:                    # this request queued: release event line
+            if on_event:
+                try:
+                    on_event({"event": "released", "seq": my[0], "waited_ms": waited_ms,
+                              "heartbeats": beats, "forced": forced})
+                except Exception:
+                    pass                      # event-log write failure never touches the relay
         return waited_ms
 
     def release(self):
@@ -434,6 +475,7 @@ class Handler(BaseHTTPRequestHandler):
     # Content-Length, so keep-alive framing stays well-formed.
     protocol_version = "HTTP/1.1"
     recorder = None
+    gate_rec = None          # rev12: dedicated gate-interception event log (lazy file)
     cfg = None
     gate = None
     cfg_path = None
@@ -667,6 +709,9 @@ class Handler(BaseHTTPRequestHandler):
         # content is untouched, in-flight requests are never reclaimed.
         limit, beat_s, wait_s = _gate_params(self.cfg_path)
         gate_on = limit > 0
+        tag, fp = key_identity(self.headers, cfg)   # rev12: hoisted — the gate-event
+        #  lines reuse it (same values as the ledger row); key_identity was already
+        #  computed once per chat request below, hoisting costs zero extra per request.
         gate_headers_sent = False          # 闸已替客户端发过响应头？
         responded = False                  # once headers are out, no second response is allowed
         truncated = False
@@ -681,12 +726,27 @@ class Handler(BaseHTTPRequestHandler):
                         gate_headers_sent = True
                         responded = True   # headers are on the wire: RELAY CONTRACT §4 applies
                     self._write_gate_hb()
+            def _gate_event(ev):           # rev12: dedicated gate-interception log
+                if self.gate_rec is None:
+                    return
+                ev = dict(ev)
+                ev["ts"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                ev["route"] = path
+                ev["model"] = req_obj.get("model", "")
+                ev["key"] = tag
+                ev["fp"] = fp
+                ev["limit"] = limit
+                ev["stream"] = is_stream_req
+                try:
+                    self.gate_rec.write(ev)
+                except Exception:
+                    pass                   # 磁盘异常禁穿热路径（红线四）
             waited_ms = self.gate.acquire(limit, beat_s, wait_s,
-                                          _gate_beat if is_stream_req else None)
+                                          _gate_beat if is_stream_req else None,
+                                          _gate_event)
             _push_gate(self.gate)
         try:
             req = urlreq.Request(up, data=body, headers=headers, method="POST")
-            tag, fp = key_identity(self.headers, cfg)
             rec = {"ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "src": "proxy",
                    "model": req_obj.get("model", ""), "key": tag, "fp": fp,
                    "ip": client_ip(self)}
@@ -925,6 +985,10 @@ def main():
     Handler.gate = Gate()
     Handler.cfg_path = sys.argv[sys.argv.index("--config") + 1]
     Handler.recorder = Recorder(out)
+    # rev12: dedicated gate-interception event log. Recorder opens NO file at
+    # construction (first write does) — gate-off means zero writes, hence zero
+    # files, zero new bytes on disk (缺省零回归红线).
+    Handler.gate_rec = Recorder(out, "gate-events")
 
     class _Server(ThreadingHTTPServer):
         # Default backlog is 5; at 11:18 the engine alone had 5 in-flight

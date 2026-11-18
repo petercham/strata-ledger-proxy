@@ -259,6 +259,8 @@ python html_report.py --config config.json --all
 
 **闸卡启动配置上限（rev11a 改形）**：跟随用两个键——`gate_follow`（缺省 false＝关跟随，闸上限照旧取 `max_inflight`，行为与升级前完全一致）、`strata_config`（Strata 启动配置文件路径，支持 `@here`/相对路径）。`gate_follow: true` 时闸上限取该文件里定死的 `"parallel"` 值——**网关只卡这个上限**；引擎运行时自己往下压（显存降级、自调）属引擎内部事务，网关**不跟、不问**（人类裁定 2026-11-17 23:13：「引擎侧自己往下压和网关有什么关系？网关只负责卡住上限，引擎自己爱干什么干什么！」；rev11 的运行时轮询读法已废，见 CHANGELOG rev11a 节）。该值一次定死：网关按文件更新时间感知变更——改了启动配置的 `parallel` 保存后网关自动跟随（mtime 守卫缓存：每请求一次文件 stat，(mtime,size) 未变用缓存、零读零解析；变了才重读），无需重启网关。这里缓存的是**本地启动配置文件的新鲜度守卫**，不是引擎运行时读数——「不缓存」禁语指的是后者（不缓存引擎运行时并发读数），别混读。`strata_config` 读不到（路径空/文件缺/JSON 坏）时退回 `max_inflight` 兜底——**在岗建议：`gate_follow: true` 且 `max_inflight` 保留人类已裁并发数（现 2）当兜底**。`parallel` 字段缺席或非数值＝引擎单发语义，闸卡 1。改这些键保存即效，无需重启。跟随态的边界见第九节第 11、12、13 条。
 
+**排队闸拦截事件独立日志（rev12）**：闸开态下，每个进闸的对话请求都在独立事件日志 `data/gate-events-YYYY-MM-DD.jsonl`（与总账 `requests-*.jsonl` 同目录、按天分文件）留下一条**决策证据**——直放＝`admitted` 一行（含网关在临界区内**核实在飞**得到的 `inflight_at_decision` 读数与当时 `limit` 快照，读数 < limit＝「核实到有空位才直放」）；被拦＝`queued` 一行（进闸瞬间，含当次在飞读数）＋`released` 一行（放行/强发时刻，含 `waited_ms` 等待毫秒、`heartbeats` 实发心跳帧数、`forced` 是否等满 `gate_wait_s` 强发）。人一眼可查「今天拦了几次、拦了谁（key/fp 与总账同口径）、等了多久、有没有等死被强发」。**决策字段与记账日志严格分离**：`event/seq/inflight_at_decision/heartbeats/forced` 只落 gate-events 文件，绝不进 `requests-*.jsonl` 键面；账本既有的 `queue_wait_ms` 保留不动，两处等待时长同一次等待的两份记录，可互证（事件日志是拦截/决策查证的权威源）。事件行字段闭集写死（三形态见 MANIFEST 2.23），**不记请求体内容**——无 messages/content/prompt 类字段，可辨识面只有 route/model/key/fp。`heartbeats`＝实发帧数口径（写失败的 ping 不算），与监视页 `beat_total`（应发计数）刻意区分，别混读。缺省零回归：闸关闭（`max_inflight=0` 且无跟随生效）时 acquire 不被调用＝零事件、零新文件、零新字节；无新增配置键。写失败口径沿总账既有纪律：单次写失败丢该行、主路径无损，`Recorder` 无 fd 坏后自愈重建（不自作主张修，要修另立票）。失败态边界见第九节第 14 条。
+
 **看门狗划界（别混淆两套看护）**：本包看门狗 `ledger_watchdog.py` **只守护本包的记账反代**（`listen` 配置的那个端口）。Strata 官方引擎壳（`serve/server.py`）自带引擎进程看护——已对上游核对属实：官方 tag `v0.2.6` 的 pristine `serve/server.py` 里有 `restart(tries=3)`（15 秒重试间隔）与冻结引擎的 quick watchdog（`ENGINE_SILENCE_S` 缺省 300 秒，#481/#1317），配套 `serve/test_fatal_recovery.py`。这套看护与本包看门狗**无关**——本包不碰它、不依赖它，也不需要你另跑官方那套看护来保活记账反代。两套看护各管各的进程，互不重叠。
 
 ---
@@ -278,6 +280,7 @@ python html_report.py --config config.json --all
 11. **跟随的生效时机＝文件保存后的下一个对话请求**（rev11a）：网关按启动配置文件的更新时间感知变更（mtime 守卫：每请求一次 `os.stat`，(mtime_ns,size) 未变用缓存、零读零解析；变了才重读解析），**无轮询周期概念、无需重启网关**；且队列中等待者的 limit 是**进闸时刻的快照**（rev10 参数语义不变），新值自下一个对话请求起生效，等待中的请求不追新值。
 12. **limit 下调瞬间，在飞可以超过新 limit**（rev11 沿原文）：闸绝不回收在飞请求（红线二沿 rev10）——limit 从 3 降到 1 时（含启动配置文件改小后），已在飞的 3 路照跑完，闸只是不再放新人；超额部分由引擎自身队列承接，最坏＝无闸现状。
 13. **读数不可得时的回退次序**（rev11a 收缩两级）：文件读数→`max_inflight` 静态兜底→兜底 0＝闸关闭；**无「沿最后一次读得的旧值继续用」档**（rev11 的运行时读数缓存已随读源作废）。引擎运行时往下压（显存降级/自调）网关不跟——闸仍卡启动配置上限，超出引擎能力的并发由引擎自身队列承接，这是「网关只负责卡住上限」（23:13 裁定）的设计语义，非缺陷。启动配置文件中途不可读（被删/改坏 JSON）＝异常配置事故：当个请求退 `max_inflight` 兜底，下一请求文件恢复即自愈；不沿旧缓存值。
+14. **事件日志写失败＝丢该行，不毁流、不进账本**（rev12）：`gate-events` 三处写点（admitted/queued/released）全部 `except Exception: pass` 吞掉——写失败不阻直放、不穿等待环、不进总账 `error` 字段；`Recorder` 与总账同款无 fd 坏后自愈重建（磁盘事故后旧 fd 不自动重开，与记账账本现纪律一致，不粉饰）。`released` 行的 `heartbeats` 只数实发成功的 ping，写失败的心跳不入该数（`beat_total` 仍按应发计数，两口径不混读）。
 
 ---
 

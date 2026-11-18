@@ -1,6 +1,6 @@
 # 清单与来源登记
 
-发行版本：`strata-ledger-proxy` 2026-11-09（本次修订 2026-11-18 · rev11a：排队闸跟随形态回流（读数源＝`strata_config` 启动配置文件定死 `parallel` 值＋mtime 守卫缓存；rev11 运行时轮询系定向拆除）；rev11：排队闸跟随引擎实际并发（`gate_follow` 开关＋后台 `/v1/status` 读数缓存＋回退链——读源已被 rev11a 回流替换）；rev10a：排队闸 v3 维护小批（入队观测即时可见＋死字段注释＋票面勘误登记）；rev10：网关侧排队闸 v3（对话请求 FIFO 准入＋SSE 等待心跳）；另含 rev9 CPU 卡型号、rev8 后补的 `config-examples/` 样例、README 踩坑登记、真机截屏配图与省钱计算器口径＋价表随包；git 仓形态，无 ZIP）
+发行版本：`strata-ledger-proxy` 2026-11-09（本次修订 2026-11-18 · rev12：排队闸拦截事件独立日志（`gate-events-YYYY-MM-DD.jsonl` 决策证据流：admitted/queued/released 三形态＋临界区在飞读数＋与记账账本严格分离；见 2.23 节）；rev11a：排队闸跟随形态回流（读数源＝`strata_config` 启动配置文件定死 `parallel` 值＋mtime 守卫缓存；rev11 运行时轮询系定向拆除）；rev11：排队闸跟随引擎实际并发（`gate_follow` 开关＋后台 `/v1/status` 读数缓存＋回退链——读源已被 rev11a 回流替换）；rev10a：排队闸 v3 维护小批（入队观测即时可见＋死字段注释＋票面勘误登记）；rev10：网关侧排队闸 v3（对话请求 FIFO 准入＋SSE 等待心跳）；另含 rev9 CPU 卡型号、rev8 后补的 `config-examples/` 样例、README 踩坑登记、真机截屏配图与省钱计算器口径＋价表随包；git 仓形态，无 ZIP）
 用途：给另一台机器（代号 5090）替换旧的「旁路边读引擎日志」账本链的**独立工具包**。
 运行要求：本机 Python 3.13 实测通过；3.8 未实测，静态检查未见 3.9+ 专有语法（内置泛型下标 `list[...]`、`X | Y` 联合类型、match 语句等均未使用）。主链仅标准库；`psutil` 与 `nvidia-smi` 为监控增强，缺失时自动降级。目标机若用更旧版本，请先跑 `bootstrap.py --selftest` 验证。
 
@@ -405,6 +405,25 @@
 | `MANIFEST.md` / `CHANGELOG.md` | 本节＋rev11a 条目（根因段如实登记 R-2 被 23:13 裁定替换·INTK-0003 指针逐字引用，不粉饰不静默覆盖） | 登记 |
 
 **验收读数（票③逐条）**：闭集 diff 外零文件；proxy **41/41**（41−3＋3）连续三跑稳定、monitor **54/54**、watchdog **16 passed 0 failed**；`grep -c '^PASS  gate:'`＝**19**（10＋防误杀 4＋保留跟随 2＋新增 3）；作废三名输出归零；`urlopen`＝**3**（回 e791a75 基线）、`v1/status`＝0、`threading.Thread`＝**1**（回基线）、`global _engine_reading`＝0、六名复合 grep＝0、`gate_follow_poll_s`（代码）＝0；锁计数逐值不变 Lock=1/Condition=1；缓存面落位 `_strata_parallel_cache`≥1/`_strata_parallel_limit`≥2/`st_mtime_ns`≥1/`global _strata_parallel_cache`≥1/float `st_mtime` 禁语＝0；新断言两枚 PASS＋boot fallback 仍 PASS（改体留名）；防误杀族四名 PASS＋族面 diff 零行；Gate 本体零改动；红线一机检 `(429|409)`＝0；模板落位 OK；README `gate_follow_poll_s`/`fit_parallel`/`最后一次成功读数` 三枚归零＋「不跟、不问」≥1＋CHANGELOG `23:13`/`INTK-0003` ≥1 各。**文件数不变**。**在岗动作属票后置**（删 `gate_follow_poll_s`＋加 `"strata_config": "D:/Strata/strata-unsloth-ud-iq4_xs.json"`＋换脑窗口主理人另排，不在本票验收面）。
+
+### 2.23 rev12：排队闸拦截事件独立日志——每个入栈请求留「核实在飞＋放行决策」证据（2026-11-18 · 功能新增 · 三套全绿）
+
+背景（票 `2026-11-18-ledger-gate-log`，效力来源＝人类 08:02 逐字 INTK-0005「如果真实出现了拦截，我希望你能够做成独立的日志」＋08:04 补令（续 INTK-0005）「让我能够确定，你对每次入栈请求都做到了核实在飞进程并决策是否放行，不要和记账日志放在一起」）：拦截可见性此前全押观测快照面（ext.json push＋总账 `queue_wait_ms` 字段），事件流面缺席——快照答不了「拦了几次、拦了谁、等了多久、有没有被强发」，也证不了「每次入栈都核实过在飞并做过决策」。本票只加观测输出，闸语义零变化。
+
+**事件行字段闭集（写死·禁增禁减·禁记请求体内容）**——文件 `data/gate-events-YYYY-MM-DD.jsonl`，Recorder 按天分文件同总账机制：
+- `admitted` 行＝`{ts, event:"admitted", route, model, key, fp, limit, stream, inflight_at_decision}`（快路直放；`inflight_at_decision` < limit＝「核实到有空位才直放」）；
+- `queued` 行＝`{ts, event:"queued", seq, route, model, key, fp, limit, stream, inflight_at_decision}`（进闸瞬间；读数 ≥ limit）；
+- `released` 行＝`{ts, event:"released", seq, route, model, key, fp, limit, stream, waited_ms, heartbeats, forced}`（放行/强发时刻；`seq`＝queued/released 互查键；`heartbeats`＝实发帧数口径；`forced`＝等满 `gate_wait_s` 强发可辨识）。
+`key`/`fp` 与总账同款口径（密钥标签/指纹，非请求内容）。`event/seq/inflight_at_decision/heartbeats/forced` 禁入 `requests-*.jsonl` 键面（红线六·补令字面）；总账 `queue_wait_ms` 保留不动、双写互证、事件日志＝拦截/决策查证权威源（票裁 A-4）。
+
+| 文件 | 改动 | 为什么 |
+|---|---|---|
+| `collector_proxy.py` | G-0 `Recorder.__init__` 加 `prefix="requests"` 默认参＋`self.prefix`＋文件名 f-string 参数化（默认值使既有 `Recorder(out)` 调用逐字节同形）；G-1 `Gate.acquire` 尾参 `on_event=None`（返回类型仍 `-> int`）＋局部量 `forced/beats/enq_at/fast_admit/adm_at`＋**锁内决策读点**（快路 `adm_at = self.inflight` 在 `inflight += 1` 前；入队 `enq_at = self.inflight` 同锁内）＋快路出锁发 admitted 后 `return 0`（②-2 唯一允许语义触碰：返回值/条件/零等待不变）＋入队 off-lock queued 挂点（rev10a push 同刻同纪律）＋expired 分支 `forced = True`＋`on_beat()` 成功返回后 `beats += 1`（实发口径）＋返回前 off-lock released 挂点；三挂点全 `except Exception: pass`；G-2 `Handler.gate_rec` 类属性＋`tag, fp = key_identity(...)` 上提复用（try 块内原调用删除，同请求值逐位相同）＋`_gate_event` 闭包装配闭集字段；G-3 main() `Handler.gate_rec = Recorder(out, "gate-events")`（构造不建文件＝闸关零文件零新字节） | 08:04「核实在飞」落点＝读数与判定同一临界区，禁出锁补读污染；off-lock 纪律沿 rev10a；冻结 token 面 `-w` 口径 ±行＝0 |
+| `selftest_proxy.py` | K-0 新标记键三枚 `KEY_GE1/KEY_GE2/KEY_GE3`（＋FP＋cfg2 三行 label；禁复用 KEY_FAST/KEY_WAIT/KEY_3RD——QA 票前审 D-1 断言 23 撞计数案）；H-0 `gate_events(tmp)` helper＋`GEV_FIELDS`/`GEV_SEP_KEYS` 闭集常量＋`import glob`；G-C `gate:gate-events no file with gate off`（T-1 全程闸关零文件＋总账在场对照）；G-A `gate:gate-events queued line visible while still queued`（排队中 queued 行已在盘＝进闸即写行为证＋读数 1/1＋route 去 query 值＋总账 scan 无决策键＋released seq 吻合/forced False/heartbeats≥1/waited≥400；收尾 cfg 自恢复）；G-B `gate:gate-events forced line on gate_wait_s expiry`（非流式强发 forced True/waited≥900/heartbeats=0/stream False/行序 queued<released）；G-D `gate:gate-events admitted line carries decision reading`（专用 KEY_GE3 直放留痕 0/1＋无 queued/released＋闭集＋总账 scan）；既有 41 断言零改动零作废；T-4 防误杀族零改动 | 验收重心族③-13＝每次入栈决策可查证；键专用防计数污染 |
+| `README.md` | §八 新增「排队闸拦截事件独立日志（rev12）」段（三形态＋决策证据口径＋分离红线＋双写互证＋**不记请求体内容**隐私口径＋heartbeats 实发 vs beat_total 应发不混读＋缺省零回归＋写失败沿总账纪律）；§九 新增第 14 条（写失败丢行不毁流不进账本＋无 fd 自愈不粉饰） | 边界不许粉饰；隐私闭集口径登记 |
+| `MANIFEST.md` / `CHANGELOG.md` | 本节（含事件行三形态字段闭集全表）＋rev12 条目（发行头 rev12 行） | 登记；08:02/08:04/INTK-0005 指针入 CHANGELOG |
+
+**验收读数（票③逐条）**：闭集 diff 外零文件＝0；proxy **45/45** 两跑稳定（41＋新 4 只增不减）、monitor **54/54**、watchdog **16 passed 0 failed**（两套测试文件 diff 零触碰）；`grep -c '^PASS  gate:'`＝**23**（基线 19＋新 4）；防误杀族四名 PASS＋族面 diff 零行＝0；既有 gate 断言删除行＝0；`urlopen`＝3/`threading.Thread`＝1/Lock＝1/Condition＝1 逐值不变；`(429|409)`＝0；冻结 token（`-w` 口径·v3 扩 `self.inflight <`/`self._seq +=` 两枚）±行＝**0**＋`on_event=None) -> int`＝1；`queue_wait_ms`＝1＋diff ±行＝0＋diff `rec[` 加行＝0；落位 `gate-events`≥1/`gate_rec`≥3/`inflight_at_decision|adm_at|enq_at`≥6；README `不记请求体内容`/`gate-events-`/`核实在飞`、CHANGELOG `08:02`/`INTK-0005`/`08:04`、MANIFEST `rev12` 各≥1。**无新配置键·模板零触碰·文件数不变**。**在岗换脑属票后置**（主理人另排安全窗口；监视页/日报消费 gate-events＝另票）。
 
 
 ## 三、如实登记：代码分叉
