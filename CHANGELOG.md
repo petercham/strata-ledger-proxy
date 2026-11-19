@@ -10,8 +10,9 @@
 - **改动**（`monitor.js`＋`selftest_monitor.py`＋文档，`monitor_ext.py`/`collector_proxy.py` 零触碰）：
   1. 独立「等待中」卡（rev10 `renderGate`）撤销——`card-gate` 不再产出，旧在岗页缓存残留由每 tick prune 清除。
   2. 顶部模型状态卡承载两队列：排队徽标任一队列 >0 即亮并带数字（`排队 N`，N＝引擎 queued＋网关 gate queued）；标签行按来源区分——「网关队列 N 个在等闸」／「引擎队列 N 个在排队」／双队列并存「排队 N（网关 a · 引擎 b）」。数据源两路本就分置（`/metrics live.queued` vs `/ext.json gate.queued`），口径不混。
-  3. 汇总行起始时刻 `{weekday,hour,minute}` → `{year,month,day,hour,minute}`（如「自 2026/11/17 00:21」），跨周无歧义。
-- **selftest**：monitor 套 gate 段断言反转改版（独立卡永不出现＋状态卡标签承载「网关队列」字样＋归零回退idle），**54/54 PASS**；proxy 45/45、watchdog 16/0、daily_report 15/15 回归全绿。
+  3. 汇总行起始时刻 `{weekday,hour,minute}` → 写死可锁格式 `YYYY-MM-DD HH:MM`（手写 pad，不用 `toLocaleString`——带选项读数随浏览器 locale 变、不可逐字锁，票 A-1）。前后样张：「自 周二00:21：…」→「自 2025-12-17 06:41：…」（票 `2026-11-19-ledger-monitor-date` S-1）。
+- **selftest**：monitor 套 gate 段断言反转改版（独立卡永不出现＋状态卡标签承载「网关队列」字样＋归零回退 idle）＋S-2 两枚（静态锁写死两行逐字节＋smoke 行为断言 `^自 \d{4}-\d{2}-\d{2} \d{2}:\d{2}：\d` 不含「周」），**56/56 PASS**；proxy 45/45、watchdog 16/0、daily_report 15/15 回归全绿。红线机检：`monitor.js` 对基线删除行＝1（S-1 单点）、`weekday:` 计数＝0。
+- **同日追加（INTK-0011·16:09）**：「网卡合计」独立行撤销（rev8 起老块 `mx-note`，同款低信息量独立块）——每网卡卡已带 ↓/↑ 明细；仅无已连接网卡时留一条状态提示（补 `data-mx-section="net"` 防残留）；`sumDown/sumUp` 死变量清理。monitor 套 56/56 复跑绿。
 - **生效时机**：monitor.js/monitor.html 每请求现读磁盘（`_read_asset`）——同步在岗即生效，**不依赖换脑**。
 
 ## 2026-11-19（rev13）· 日报补排队闸拦截三指标：`## 排队闸拦截统计` 节四态口径（功能新增 · 四套全绿）

@@ -550,7 +550,6 @@
     if (!host) return;
     const adapters = (data.net || []).filter((a) => a.connected);
     const seen = new Set();
-    let sumDown = 0, sumUp = 0;
     for (const a of adapters) {
       const id = domId("net", a.name);
       seen.add(id);
@@ -571,14 +570,16 @@
       const hd = hist.net[a.name] || (hist.net[a.name] = []);
       const hu = hist.netUp[a.name] || (hist.netUp[a.name] = []);
       drawDualSpark($(id + "-sp"), push(hd, a.down_mb), push(hu, a.up_mb), RW_DOWN, RW_UP);
-      sumDown += a.down_mb || 0;
-      sumUp += a.up_mb || 0;
     }
     pruneSection(host, "net", seen);
-    noteOnce(host, "mx-note", '<div id="mx-note"></div>');
-    $("mx-note").innerHTML = adapters.length
-      ? `网卡合计 · ${sw(RW_DOWN)}↓ ${rateParts(sumDown).join(" ")} · ${sw(RW_UP)}↑ ${rateParts(sumUp).join(" ")}`
-      : "网卡 · 没有已连接的网卡数据（psutil 缺失或都未连接）";
+    // 「网卡合计」独立行撤销（2026-11-19 人类口径：独立低信息量块不留，
+    // 每网卡卡已带下行/上行明细）；只在没有任何已连接网卡数据时留一条状态提示。
+    const nx = $("mx-note");
+    if (nx) nx.remove();
+    if (!adapters.length) {
+      host.insertAdjacentHTML("beforeend",
+        '<div id="mx-note" data-mx-section="net" class="muted">网卡 · 没有已连接的网卡数据（psutil 缺失或都未连接）</div>');
+    }
   }
 
   // ================= Context fill 环表 + 三条进度（/metrics 与 /ext.json 混用） =================
@@ -654,7 +655,7 @@
     $("req-wrap").classList.toggle("all", reqShowAll);
     const t = m && m.totals;
     if (t && t.requests) {
-      const sinceStr = new Date(t.since * 1000).toLocaleString([], { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+const sinceStr = new Date(t.since * 1000).toLocaleString([], { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
       const read = (t.prompt_tokens || 0) - (t.reused || 0);
       const pSpeed = t.prompt_ms > 0 && read > 0 ? ` · ${fmt(read / (t.prompt_ms / 1000))} t/s` : "";
       const oSpeed = t.decode_ms > 0 && t.output_tokens > 0 ? ` · ${fmt(t.output_tokens / (t.decode_ms / 1000), 1)} t/s` : "";
