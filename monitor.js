@@ -655,7 +655,8 @@
     $("req-wrap").classList.toggle("all", reqShowAll);
     const t = m && m.totals;
     if (t && t.requests) {
-const sinceStr = new Date(t.since * 1000).toLocaleString([], { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+      const sd = new Date(t.since * 1000);
+      const sinceStr = `${sd.getFullYear()}-${String(sd.getMonth() + 1).padStart(2, "0")}-${String(sd.getDate()).padStart(2, "0")} ${String(sd.getHours()).padStart(2, "0")}:${String(sd.getMinutes()).padStart(2, "0")}`;
       const read = (t.prompt_tokens || 0) - (t.reused || 0);
       const pSpeed = t.prompt_ms > 0 && read > 0 ? ` · ${fmt(read / (t.prompt_ms / 1000))} t/s` : "";
       const oSpeed = t.decode_ms > 0 && t.output_tokens > 0 ? ` · ${fmt(t.output_tokens / (t.decode_ms / 1000), 1)} t/s` : "";

@@ -151,7 +151,9 @@ global.fetch = async (url, opts) => {
         live: { state: "idle", prompt_tokens: 0, max_context: 131072 },
         hardware: { cpu: 7, cpu_sockets: [5, 9], gpu_pcie_rx_mb: 12 },
         hardware_static: { cores: 16, threads: 32, cpu_socket_stats: [{ cores: 8, threads: 16 }, { cores: 8, threads: 16 }] },
-        history: {}, requests: [], requests_kept: 0, totals: {},
+        history: {}, requests: [], requests_kept: 0,
+        totals: { requests: 7, since: 1765960860, prompt_tokens: 1200, reused: 300,
+                  output_tokens: 450, prompt_ms: 400, decode_ms: 900 },
         conversation_cache: { enabled: false },
       }),
     };
@@ -190,6 +192,7 @@ try {
   process.on("unhandledRejection", (e) => { console.error("SMOKE FAIL (rejection):", (e && e.stack) || e); process.exit(1); });
   realSetTimeout(() => {
     if (metricsCalls < 2) { console.error("SMOKE FAIL: metrics 200-branch never exercised (calls=%d)", metricsCalls); process.exit(1); }
+    console.log("TOTALS " + JSON.stringify((els["req-totals"] && els["req-totals"].textContent) || ""));
     console.log("SMOKE OK: IIFE + tick + async render chain drained, no ReferenceError");
     process.exit(0);
   }, 300);
@@ -322,6 +325,14 @@ def main():
     rec("/monitor.js serves uuid-bound script",
         js is not None and b"uuid" in js[0] and b"hist.gpus" in js[0],
         "len=%s" % (len(js[0]) if js else 0))
+    rec("req-totals since line locked to ISO-style date, weekday option gone",
+        js is not None
+        and b"const sd = new Date(t.since * 1000);" in js[0]
+        and b'${sd.getFullYear()}-${String(sd.getMonth() + 1).padStart(2, "0")}' in js[0]
+        and b'weekday: "short"' not in js[0],
+        "locked-lines=%s weekday-gone=%s" % (
+            js is not None and b"const sd = new Date(t.since * 1000);" in js[0],
+            js is not None and b'weekday: "short"' not in js[0]))
     css = m.answer("/monitor.css")
     rec("/monitor.css served as text/css with the ported st-* tokens",
         css is not None and "text/css" in css[1]
@@ -504,6 +515,18 @@ def main():
                 "stub, no ReferenceError/TypeError (SPEED_DECODE incident class)",
                 _r.returncode == 0 and "SMOKE OK" in (_r.stdout or ""),
                 (_r.stderr or _r.stdout or "").strip()[-200:])
+            import re as _re
+            _tline = ""
+            for _ln in (_r.stdout or "").splitlines():
+                if _ln.startswith("TOTALS "):
+                    _tline = _ln[len("TOTALS "):]
+            try:
+                _txt = json.loads(_tline)
+            except Exception:
+                _txt = ""
+            rec("req-totals line renders real Y-M-D (smoke)",
+                bool(_re.match(r"^自 \d{4}-\d{2}-\d{2} \d{2}:\d{2}：\d", _txt)) and "周" not in _txt,
+                "line=%r" % (_txt[:80],))
         finally:
             try:
                 os.unlink(_hp)
