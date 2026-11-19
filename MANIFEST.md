@@ -439,6 +439,18 @@
 
 **上线不依赖换脑**（路由件⑧）：A/C1/C2 及 B（fixture 总账）验收全在测试环境；生产闸数据产出依赖换脑自动任务（票外观察面）。网页报表 `html_report.py` 消费 gate-events、监视页闸统计＝仍另票后置。
 
+### 2.25 rev15：监视页排队显示改版——独立「等待中」卡撤销并入状态卡＋汇总行日期口径（2026-11-19 · 人类直令 · 四套全绿）
+
+背景（人类 13:45 直令＋INTK-0010）：「等待中」独立卡信息量过低——排队信息并入顶部模型状态卡，区分网关队列/引擎队列、有排队时标签带数字；汇总行「自 周二00:21」跨周歧义→至少实际年月日期。
+
+| 文件 | 改动 | 为什么 |
+|---|---|---|
+| `monitor.js` | `renderState(m, gate)` 增 gate 参：排队徽标任一队列 >0 亮＋带总数（`排队 N`）；标签行三文案「网关队列 N 个在等闸」／「引擎队列 N 个在排队」／「排队 N（网关 a · 引擎 b）」；rev10 `renderGate` 撤销换 `pruneStaleGateCard()`（每 tick 清 `card-gate` 缓存残留）；汇总行 `sinceStr` 格式化 `{weekday,hour,minute}`→`{year,month,day,hour,minute}` | 两队列语义分置（`/ext.json gate.queued` vs `/metrics live.queued`）不混读；旧在岗页缓存防残留 |
+| `selftest_monitor.py` | 7c 段 gate smoke 断言改版：独立卡三态永不出卡＋状态卡标签承载「网关队列」字样＋归零回退 idle（断言数不变 54） | 行为守卫随改版反转 |
+| `README.md` / `MANIFEST.md` / `CHANGELOG.md` | 闸段监视页口径一句改写／本节／rev15 节 | 登记 |
+
+生效＝同步在岗即生效（`_read_asset` 每请求现读盘），不依赖换脑。
+
 ## 三、如实登记：代码分叉
 
 这套脚本与 5090 工具包里的 `skill-token-ledger/scripts/collector_proxy.py`（母本，260 行）**不是同一份文件**：

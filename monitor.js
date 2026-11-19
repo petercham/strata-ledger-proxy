@@ -207,13 +207,20 @@
   }
 
   // ================= model state card（/metrics live，口径照官方 renderMonitor） =================
-  function renderState(m) {
+  function renderState(m, gate) {
     const live = (m && m.live) || {};
     const requests = (m && m.requests) || [];
     const last = requests[0];
-    const on = live.queued > 0 ? "queued" : (live.state || "idle");
+    // 两条队列语义不同：engine queued（/metrics live）＝引擎侧排队的请求；
+    // gate queued（/ext.json gate 段）＝被网关闸扣在队列里的入栈请求。
+    // 排队徽标两队列任一 >0 就亮并带数字；标签行按来源区分口径。
+    const engQ = live.queued || 0;
+    const gwQ = (gate && gate.queued) || 0;
+    const qTotal = engQ + gwQ;
+    const on = qTotal > 0 ? "queued" : (live.state || "idle");
     for (const b of document.querySelectorAll("#state-badges .st-badge")) {
       b.classList.toggle("on", b.dataset.s === on || b.dataset.s === live.state);
+      if (b.dataset.s === "queued") b.textContent = qTotal > 0 ? `排队 ${fmt(qTotal)}` : "排队";
     }
     const prog = $("state-progress");
     let label = "等待请求", detail = "", pct = 0;
@@ -236,7 +243,9 @@
     } else {
       delete prog.dataset.tone;
       if (last) detail = `上一次：${fmt(last.output_tokens)} tokens${last.decode_tok_s ? ` · ${fmt(last.decode_tok_s, 1)} tok/s` : ""}`;
-      if (live.queued > 0) label = `${fmt(live.queued)} 个请求排队`;
+      if (gwQ > 0 && engQ > 0) label = `排队 ${fmt(qTotal)}（网关 ${fmt(gwQ)} · 引擎 ${fmt(engQ)}）`;
+      else if (gwQ > 0) label = `网关队列 ${fmt(gwQ)} 个在等闸`;
+      else if (engQ > 0) label = `引擎队列 ${fmt(engQ)} 个在排队`;
     }
     $("state-label").textContent = label;
     $("state-detail").textContent = detail;
@@ -482,19 +491,12 @@
     }
   }
 
-  // ================= 网关排队闸「等待中」卡（/ext.json gate 段；rev10） =================
-  // queued==0（含字段缺席）→ 不渲染＋清旧卡：本包无排队态时页面上不得出现
-  // 排队卡（引擎原生 queued 语义在状态卡里，两语义分卡分文案，互不混淆）。
-  function renderGate(ext) {
-    const host = $("metrics");
-    if (!host) return;
-    const g = ext && ext.gate;
-    if (!g || !(g.queued > 0)) { pruneSection(host, "gate", new Set()); return; }
-    const id = "card-gate";
-    ensure(host, id, cardHtml(id, "gate", "等待中", { icon: "activity", tone: "info" }));
-    const v = $(id + "-v");
-    if (v) v.innerHTML = `${fmt(g.queued)}<small> 个</small>`;
-    setSub(id + "-s", `网关等待 · 在飞 ${fmt(g.inflight)}/${fmt(g.limit)}`);
+  // ================= 网关排队闸：已并入顶部模型状态卡（2026-11-19 人类口径） =================
+  // 独立「等待中」卡信息量过低，撤销。两条队列（网关闸 gate.queued / 引擎
+  // live.queued）的计数与来源区分都在 renderState 的排队徽标＋标签行承载。
+  // 旧版在岗页缓存里的 card-gate 残留由下面 prune 清除。
+  function pruneStaleGateCard() {
+    pruneSection($("metrics"), "gate", new Set());
   }
 
   // ================= 每物理硬盘卡（/ext.json；读=绿 写=橙，波形双色） =================
@@ -652,7 +654,7 @@
     $("req-wrap").classList.toggle("all", reqShowAll);
     const t = m && m.totals;
     if (t && t.requests) {
-      const sinceStr = new Date(t.since * 1000).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
+      const sinceStr = new Date(t.since * 1000).toLocaleString([], { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
       const read = (t.prompt_tokens || 0) - (t.reused || 0);
       const pSpeed = t.prompt_ms > 0 && read > 0 ? ` · ${fmt(read / (t.prompt_ms / 1000))} t/s` : "";
       const oSpeed = t.decode_ms > 0 && t.output_tokens > 0 ? ` · ${fmt(t.output_tokens / (t.decode_ms / 1000), 1)} t/s` : "";
@@ -733,7 +735,7 @@
     // 卡片区顺序照旧融合视图：速度 → 每显卡 → PCIe → CPU → 系统内存 → 硬盘 → 网卡。
     // ensure() 在卡片第一次出现时按调用顺序插进网格，所以这里先渲染谁、谁就在前。
     if (met) {
-      renderState(met);
+      renderState(met, ext && ext.gate);
       renderSpeed(met);
     }
     if (ext) {
@@ -756,7 +758,7 @@
     }
     if (ext) {
       renderRam(ext);
-      renderGate(ext);
+      pruneStaleGateCard();
       renderDisks(ext);
       renderNet(ext);
     }

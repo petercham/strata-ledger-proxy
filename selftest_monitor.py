@@ -512,11 +512,11 @@ def main():
     else:
         rec("node smoke skipped (node not installed on this box)", True)
 
-    # ---- 7c. gate card behaviour (rev10, H-1 态甲): a second node smoke drives
-    # the render chain with ext.gate.queued = 0 then 2 then 0 again. Expect:
-    # queued=0 (and field absent) -> NO "等待中" card; queued=2 -> card shown,
-    # sub text carries 「网关等待」; back to 0 -> card pruned again. This is the
-    # behavioural guard the static greps cannot give.
+    # ---- 7c. gate queue merged into state card (2026-11-19 human call): the
+    # standalone "等待中" card is retired. ext.gate.queued=2 -> NO card-gate ever
+    # (pruned if stale); the state card carries it: label mentions 「网关队列」 + count,
+    # engine-queue vs gateway-queue wording distinguished. queued back to 0 ->
+    # label returns to idle wording.
     if _node:
         _GATE_SMOKE = r"""
 "use strict";
@@ -627,14 +627,14 @@ try {
     await settle();                                   // tick #1 rendered with NO gate field
     console.log("G0ABSENT " + (gateCard() ? 0 : 1));
     global.__gate = { inflight: 1, queued: 2, limit: 1, waited_total: 1500, beat_total: 3 };
-    await global.__tick();                            // tick #2: queued=2
+    await global.__tick();                            // tick #2: gate queued=2 -> state card, NO standalone card
     const shown = gateCard();
-    const sub = (els["card-gate-s"] && els["card-gate-s"].textContent) || "";
-    const val = (els["card-gate-v"] && els["card-gate-v"].innerHTML) || "";
-    console.log("G2SHOWN " + (shown ? 1 : 0) + " SUB " + JSON.stringify(sub) + " VAL " + JSON.stringify(val));
+    const label = (els["state-label"] && els["state-label"].textContent) || "";
+    console.log("G2STATE " + (shown ? 1 : 0) + " LABEL " + JSON.stringify(label));
     global.__gate = { inflight: 1, queued: 0, limit: 1, waited_total: 1500, beat_total: 3 };
-    await global.__tick();                            // tick #3: queued back to 0 -> prune
-    console.log("G0PRUNED " + (gateCard() ? 0 : 1));
+    await global.__tick();                            // tick #3: queued back to 0 -> label back to idle
+    const label3 = (els["state-label"] && els["state-label"].textContent) || "";
+    console.log("G0PRUNED " + (gateCard() ? 0 : 1) + " LABEL3 " + JSON.stringify(label3));
     console.log("GATE SMOKE DONE");
     process.exit(0);
   })().catch((e) => { console.error("GATE SMOKE FAIL:", (e && e.stack) || e); process.exit(1); });
@@ -651,18 +651,18 @@ try {
                           capture_output=True, text=True, timeout=30)
             _out = _gr.stdout or ""
             _g0 = "G0ABSENT 1" in _out
-            _g2 = "G2SHOWN 1" in _out
-            _subline = ""
+            _line2 = ""
             for _ln in _out.splitlines():
-                if _ln.startswith("G2SHOWN"):
-                    _subline = _ln
-            _gw = "网关等待" in _subline
+                if _ln.startswith("G2STATE"):
+                    _line2 = _ln
+            _nocard = "G2STATE 0" in _out
+            _gw = "网关队列" in _line2 and "2" in _line2
             _gp0 = "G0PRUNED 1" in _out
-            rec("gate-card hidden when queued=0", _g0 and _gp0,
-                "absent-field hidden=%s pruned-after-queued-returns-0=%s (%s)"
-                % (_g0, _gp0, (_gr.stderr or _out or "").strip()[-120:]))
-            rec("gate-card shown when queued=2", _g2 and _gw,
-                "shown=%s sub=%r" % (_g2, _subline[:120]))
+            rec("gate queue: standalone card retired, state card carries it", _g0 and _nocard and _gw and _gp0,
+                "absent-hidden=%s no-card-on-queued=%s state-label-carries=%s pruned=%s (%s)"
+                % (_g0, _nocard, _gw, _gp0, (_gr.stderr or _out or "").strip()[-120:]))
+            rec("gate queue label source-worded", _gw,
+                "line=%r" % (_line2[:120],))
         finally:
             try:
                 os.unlink(_gp)
