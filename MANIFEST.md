@@ -33,6 +33,7 @@
 | `selftest_proxy.py` | 回归自测（假上游 + 临时端口），用例数见 2.4 节 | 本机自测副本 + 补丁 |
 | `selftest_watchdog.py` | 临时端口回归用例，用例数按当次实际输出报出 | 本机自测副本，未改 |
 | `selftest_monitor.py` | 监控页回归用例（18 列解析 / UUID 身份 / PCIe 链路与零告警纪律 / lead 单线 PCIe 卡 / disks-net innerHTML / mx-sw 10×3 / disk rev6 与 net rev6b 卡形态 / CPU 图例与配色 / 小字基线骨架 / node 冒烟 / 路由与融合页静态资产断言），用例数按当次实际输出报出 | 本包新写（2026-11-16，三稿扩充 + 四稿扩充 + 五稿对齐 + 六稿卡重构/图例/骨架对齐，见 2.9 / 2.10 / 2.11 节） |
+| `selftest_daily_report.py` | 日报闸统计节回归用例（fixture 驱动：A/B/C1/C2 四态 + 跨日标注 + 回填口径 + 幂等 + `--day` force + 隐私 scan + 节位 + 既有四节序不变），用例数按当次实际输出报出 | 本包新写（2026-11-19 rev13，见 2.24 节） |
 | `start.bat` | Windows 启动（GBK + CRLF） | 本包新写 |
 | `start.sh` | Linux / macOS 启动（LF） | 本包新写 |
 | `service-examples/*` | 登录自启 / systemd / launchd 示例 | 本包新写 |
@@ -425,6 +426,18 @@
 
 **验收读数（票③逐条）**：闭集 diff 外零文件＝0；proxy **45/45** 两跑稳定（41＋新 4 只增不减）、monitor **54/54**、watchdog **16 passed 0 failed**（两套测试文件 diff 零触碰）；`grep -c '^PASS  gate:'`＝**23**（基线 19＋新 4）；防误杀族四名 PASS＋族面 diff 零行＝0；既有 gate 断言删除行＝0；`urlopen`＝3/`threading.Thread`＝1/Lock＝1/Condition＝1 逐值不变；`(429|409)`＝0；冻结 token（`-w` 口径·v3 扩 `self.inflight <`/`self._seq +=` 两枚）±行＝**0**＋`on_event=None) -> int`＝1；`queue_wait_ms`＝1＋diff ±行＝0＋diff `rec[` 加行＝0；落位 `gate-events`≥1/`gate_rec`≥3/`inflight_at_decision|adm_at|enq_at`≥6；README `不记请求体内容`/`gate-events-`/`核实在飞`、CHANGELOG `08:02`/`INTK-0005`/`08:04`、MANIFEST `rev12` 各≥1。**无新配置键·模板零触碰·文件数不变**。**在岗换脑属票后置**（主理人另排安全窗口；监视页/日报消费 gate-events＝另票）。
 
+### 2.24 rev13：日报补排队闸拦截三指标——`## 排队闸拦截统计` 节四态口径（2026-11-19 · 功能新增 · 四套全绿）
+
+背景（票 `2026-11-19-ledger-gate-daily-stats`，效力来源＝人类 00:19 逐字 INTK-0007「网关日报需要补充报告当前拦截入栈次数，拦截请求的最长等待时间和平均等待时间」）：rev12 事件日志已落但日报未消费（rev12 票④明示「日报消费 gate-events＝另票后置」，本票即该后置票）。日报新增 `## 排队闸拦截统计` 节（落位＝「覆盖窗口」后、「按小时分布」前），三指标＝拦截入栈次数（当日 `gate-events` `queued` 行数）、最长等待／平均等待（当日 `released` 行 `waited_ms` max/mean，ms 取整＋秒一位小数）；四态状态机两态禁混淆：A 有当日事件文件（三指标＋补充观察列 released/forced/heartbeats＋跨日口径标注「N 项等待自前日跨入」）／B 无文件但总账有 `queue_wait_ms` 行→**回填口径**（在岗 11-18 及以前换脑前不产事件文件，逐事件数据不可恢复——同源字段回填＋显式降级标注，非编造）／C1 config 静态关闸→「闸未启用」文案不出数字／C2 开闸（含 gate_follow）无事件→0／—＋「按生成时刻 config 判定、回填历史日时该判定可能失真」诚实标注。`daily_report.py` 纯插入（diff 删除行＝0），`build_report` 签名不变、幂等/skip/`--day`/`--all`/`--reported` 机制零触碰。
+
+| 文件 | 改动 | 为什么 |
+|---|---|---|
+| `daily_report.py` | G-0 新 helper 两枚（`pct()` 尾后、`build_report` 前）：`load_gate_day(out_dir, day)` 按日读 `gate-events-<day>.jsonl`（Recorder 按 ts 路由＝无需跨文件扫描）＋`gate_section(out_dir, day, req, cfg)` 四态统计（只出聚合量·隐私红线四；缺数据标注缺口不外推·红线五）；G-1 挂点两行（覆盖窗口节尾 `out.append("")` 后）：`out.extend(gate_section(cfg["out_dir"], day, req, cfg))` ＋ `out.append("")`——全部纯插入，既有行零修改零删除 | 三指标＝00:19 已裁口径直译；B 态回填＝A-3（禁编造≠禁回填：同源字段证据＋显式标注）；两态判别证据链＝A-2（文件→总账佐证→config 现值三级） |
+| `selftest_daily_report.py` | **新文件**：fixture 驱动回归套（纯标准库、无网络、不起服务、每态临时盒用完即弃），15 断言全 `report:` 前缀——节位／A 态四读数＋跨日计数＋补充列／B 态回填标注＋三指标／C1 文案／C2 零值文案／C1-C2 互斥双向 scan／隐私 scan／幂等 True→False／`--day` force 重写／既有四节序不变（红线一行为证） | 四态＋跨日＋回填＋幂等＋隐私＋节位机械可验收（②-4 N≥14）；独立成文件不入 proxy 套＝A-6（45 断言冻结面不碰） |
+| `bootstrap.py` | `REQUIRED` 加 `selftest_daily_report.py`（一行，其余零改） | 新测试套入必需文件清单 |
+| `README.md` / `MANIFEST.md` / `CHANGELOG.md` | 日报条目补闸统计节口径一句／本节＋文件清单新行／rev13 节（含 00:19 需求字面＋四态口径＋「在岗 11-18 及以前逐请求闸数据不可恢复→回填口径」登记） | 登记 |
+
+**上线不依赖换脑**（路由件⑧）：A/C1/C2 及 B（fixture 总账）验收全在测试环境；生产闸数据产出依赖换脑自动任务（票外观察面）。网页报表 `html_report.py` 消费 gate-events、监视页闸统计＝仍另票后置。
 
 ## 三、如实登记：代码分叉
 

@@ -154,7 +154,7 @@ python bootstrap.py --selftest
 ## 四、账本与报表
 
 - `data/requests-YYYY-MM-DD.jsonl`：每个请求一行，含时间、`key`（姓名或 8 位码）、`fp`（**原始 8 位指纹，永久保留**，用于事后追查 / 拆分合并 / 发现撞码）、模型、输入/缓存/生成 token、耗时、来源 IP、错误码。
-- `data/usage-report-YYYY-MM-DD.md`：**日报自动生成**——服务启动时先补查一次，之后每天 `report_hour`:`report_minute` 自动出。
+- `data/usage-report-YYYY-MM-DD.md`：**日报自动生成**——服务启动时先补查一次，之后每天 `report_hour`:`report_minute` 自动出。日报含「排队闸拦截统计」节：三指标＝拦截入栈次数（当日 `gate-events` 的 `queued` 行数）、最长等待／平均等待（当日 `released` 行 `waited_ms` 的 max/mean），指标按事件文件日归属并如实标注跨日（「N 项等待自前日跨入」）；无逐事件日志的历史日走总账 `queue_wait_ms` 回填口径（带显式标注）；「闸未启用」（config 静态关闸）与「开闸零事件显示 0／—」两态文案分开，开闸判定按日报生成时刻 config 现值，回填历史日时该判定可能失真。
 - `data/usage-report.html` + `usage-data.js`：可交互的网页报表（按天 / 快捷周期 / 起止日期，按人筛选）。**需手动生成/刷新**，命令见下；包内没有每天自动刷新它的调用链，日报线程只负责出 `.md` 日报。
 
 想手动重出某一天 / 刷新网页报表：

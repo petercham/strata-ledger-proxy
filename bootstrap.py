@@ -32,7 +32,7 @@ REQUIRED = (
     "monitor.css", "monitor-sprite.svg",
     "ext.js", "daily_report.py", "html_report.py", "ledger_watchdog.py",
     "switch_proxy.py", "selftest_proxy.py", "selftest_watchdog.py",
-    "selftest_monitor.py", "paths.py",
+    "selftest_monitor.py", "selftest_daily_report.py", "paths.py",
 )
 
 

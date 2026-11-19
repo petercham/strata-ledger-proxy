@@ -63,6 +63,76 @@ def pct(vals, p):
     return vals[i]
 
 
+def load_gate_day(out_dir, day):
+    """rev13: gate-events rows for one calendar day, day-named file only.
+    Recorder routes each row to its own ts day, so no cross-file scan is
+    needed (unlike load_day, which chases collector backfill rows)."""
+    rows = []
+    path = os.path.join(out_dir, f"gate-events-{day}.jsonl")
+    if os.path.exists(path):
+        for line in open(path, encoding="utf-8"):
+            try:
+                rows.append(json.loads(line))
+            except ValueError:
+                continue
+    return rows
+
+
+def gate_section(out_dir, day, req, cfg):
+    """rev13: 排队闸拦截统计节（四态：A 有事件文件 / B 总账佐证回填口径 /
+    C1 静态关闸 / C2 开闸无事件）。只出聚合量（隐私红线四），禁编造（红线五）。"""
+    lines = ["## 排队闸拦截统计\n"]
+    ev = load_gate_day(out_dir, day)
+    q = [e for e in ev if e.get("event") == "queued"]
+    rel = [e for e in ev if e.get("event") == "released"]
+    waits = [int(e["waited_ms"]) for e in rel
+             if isinstance(e.get("waited_ms"), (int, float))]
+    if ev:                                              # A 态
+        seqs_q = {e.get("seq") for e in q}
+        cross = sum(1 for e in rel if e.get("seq") not in seqs_q)
+        lines.append("| 指标 | 数值 |")
+        lines.append("|---|---|")
+        lines.append(f"| 拦截入栈（queued） | {len(q):,} 回 |")
+        if waits:
+            mean = sum(waits) / len(waits)
+            lines.append(f"| 最长等待（released.max） | {max(waits):,} ms（{max(waits)/1000:.1f} s） |")
+            lines.append(f"| 平均等待（released.mean） | {mean:,.0f} ms（{mean/1000:.1f} s） |")
+        else:
+            lines.append("| 最长等待（released.max） | — |")
+            lines.append("| 平均等待（released.mean） | — |")
+        forced = sum(1 for e in rel if e.get("forced"))
+        beats = sum(int(e.get("heartbeats") or 0) for e in rel)
+        lines.append(f"| 放行（released） | {len(rel):,} 回（强制放行 {forced:,}／心跳合计 {beats:,}） |")
+        lines.append("\n> 口径：指标按事件文件日归属——`queued` 计入入队日，`released` 计入释放日；"
+                     f"本窗口内 {cross:,} 项等待自前日跨入。")
+        return lines
+    wm = [int(r["queue_wait_ms"]) for r in req
+          if isinstance(r.get("queue_wait_ms"), (int, float)) and r.get("queue_wait_ms")]
+    if wm:                                              # B 态（回填期）
+        mean = sum(wm) / len(wm)
+        lines.append("> ⚠️ 当日无 `gate-events` 逐事件日志（rev12 换脑前的在岗脑不产该文件），"
+                     "逐事件决策数据不可恢复。以下为总账 `queue_wait_ms` **回填口径**"
+                     "（与 released.waited_ms 同源互证，rev12 A-4）——无入队决策读数、无心跳/强发数据。\n")
+        lines.append("| 指标 | 数值（回填口径） |")
+        lines.append("|---|---|")
+        lines.append(f"| 拦截入栈（queue_wait_ms 行数） | {len(wm):,} 回 |")
+        lines.append(f"| 最长等待 | {max(wm):,} ms（{max(wm)/1000:.1f} s） |")
+        lines.append(f"| 平均等待 | {mean:,.0f} ms（{mean/1000:.1f} s） |")
+        return lines
+    if int(cfg.get("max_inflight", 0) or 0) <= 0 and cfg.get("gate_follow") is not True:
+        lines.append("闸未启用（config 静态 `max_inflight`=0 且无 `gate_follow`）——本日无闸管辖，"
+                     "不计闸统计。开闸判定按**日报生成时刻** config 现值，回填历史日时该判定可能失真。")  # C1 态
+        return lines
+    lines.append("| 指标 | 数值 |")                      # C2 态
+    lines.append("|---|---|")
+    lines.append("| 拦截入栈（queued） | 0 |")
+    lines.append("| 最长等待（released.max） | — |")
+    lines.append("| 平均等待（released.mean） | — |")
+    lines.append("\n> 口径：开闸（含 gate_follow 跟随态）但当日无 `gate-events` 文件——可能闸开而零拦截，"
+                 "也可能事件日志未启用（换脑前）。开闸判定按**日报生成时刻** config 现值，回填历史日时该判定可能失真。")
+    return lines
+
+
 def build_report(day, rows, cfg):
     req = [r for r in rows if not r.get("kind")]
     events = [r for r in rows if r.get("kind")]
@@ -137,6 +207,8 @@ def build_report(day, rows, cfg):
         out.append(f"另有 {nots:,} 条为采集器断线期回填（无时间戳，按 offset 最后写入日归因）")
     if tsd and tsd[0][11:] > "00:00:00":
         out.append(f"\n> ⚠️ 当日 00:00 → {tsd[0][11:]} 无采集记录（服务或采集器当时未运行），该段不可恢复。")
+    out.append("")
+    out.extend(gate_section(cfg["out_dir"], day, req, cfg))
     out.append("")
 
     hist = {}
