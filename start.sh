@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Strata 账本反代工具 · Linux / macOS 启动
+# Token 账本反代工具（Strata / Basalt 兼容） · Linux / macOS 启动
 # 【仅交互式试跑】本脚本用 exec 把守护进程放到终端前台：关掉终端、SSH 断开
 # 或会话被清理，守护进程和它拉起的服务会一起消失。生产必须安装
 # service-examples/ 里的 systemd / launchd 自启件，让守护进程脱离会话常驻。

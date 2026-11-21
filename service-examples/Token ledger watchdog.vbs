@@ -1,4 +1,4 @@
-' Strata ledger proxy - Windows logon auto-start (hidden window).
+' Token ledger - Windows logon auto-start (hidden window). Engine backends: Strata / Basalt.
 '
 ' DO NOT copy this .vbs into the Startup folder. Leave it in the package
 ' directory next to ledger_watchdog.py, and put a SHORTCUT to this file into
@@ -14,15 +14,16 @@
 ' moment the old one exits (zero-gap handoff).
 '
 ' Python: by default this uses 'python' from PATH. If Python is not on PATH,
-' set STRATA_PYTHON to the full path of python.exe (a user environment
-' variable works). Never use pythonw.exe: the script prints and pythonw has
-' no console.
+' set TOKEN_LEDGER_PYTHON to the full path of python.exe (a user environment
+' variable works; the legacy name STRATA_PYTHON still works as fallback).
+' Never use pythonw.exe: the script prints and pythonw has no console.
 Option Explicit
 Dim shell, here, py, q, launchLine
 here = Left(WScript.ScriptFullName, InStrRev(WScript.ScriptFullName, "\"))
 Set shell = CreateObject("WScript.Shell")
 shell.CurrentDirectory = here
-py = shell.ExpandEnvironmentStrings("%STRATA_PYTHON%")
+py = shell.ExpandEnvironmentStrings("%TOKEN_LEDGER_PYTHON%")
+If py = "%TOKEN_LEDGER_PYTHON%" Or py = "" Then py = shell.ExpandEnvironmentStrings("%STRATA_PYTHON%")
 If py = "%STRATA_PYTHON%" Or py = "" Then py = "python"
 q = Chr(34)
 launchLine = q & py & q & " " & q & here & "ledger_watchdog.py" & q & " --lock-wait 86400"

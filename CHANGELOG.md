@@ -4,6 +4,14 @@
 
 ---
 
+## 2026-11-21（更名）· 仓名/包名 strata-ledger-proxy → token-ledger-proxy（决策者拍板 · 功能代码零触碰）
+
+- **动机**：旧名无 llm/token/usage 任一搜索词，外部发现性最弱；曾议「保留 strata」口径作废。
+- **改动面**：GitHub 远程仓改名（旧链接自动重定向）；服务示例三件改名＋VBS 解释器变量 `TOKEN_LEDGER_PYTHON`（旧名 `STRATA_PYTHON` 保留退路）；配置模板/样例 `name` 键；README/SKILL clone 地址与标题（新标题保留 Strata/Basalt 兼容关键词）；argparse 描述、sprite 注释、start.bat 窗口标题（GBK+CRLF 不动）。明细＝MANIFEST 2.27。
+- **不动面**：`tickets/` 历史票与 CHANGELOG/MANIFEST 历史节旧名（append-only 证据如实性）；在岗机器本地 `config.json` 与已装旧自启件（行为不变）。
+
+---
+
 ## 2026-11-19（rev16）· 双后端支持：Basalt 启动配置闸解析＋监视页逐槽状态＋进度条速度表退路（功能新增 · 四套全绿 · 2026-11-21 转正）
 
 - **来源与形态说明（如实登记）**：本 rev 四文件改动发生在运行时部署面（`D:/Strata-toolkit/`）而非本地仓＝部署面裸改窗口实例；2026-11-21 对拍发现后按「仓为基底＋四较新文件覆盖」合回本地仓（备份＝`strata-ledger-proxy-BACKUP-20261121`），commit `542eb74` 曾带 `(wip)` 标记，本节即转正登记，历史 commit 不回改。

@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg">
-<!-- Strata ledger kit self-owned icon sprite. Icon geometry copied verbatim from the
+<!-- Token ledger kit self-owned icon sprite. Icon geometry copied verbatim from the
      official Strata webui sprite (visual parity of the fused monitor view); served by
      the ledger proxy at /monitor-sprite.svg. The kit never loads the official sprite. -->
 <symbol id="i-gauge" viewBox="0 0 24 24" fill="none"><path opacity="0.12" d="M2 15C2 9.477 6.477 5 12 5C17.523 5 22 9.477 22 15C22 16.5 21.7 17.8 21.1 19H2.9C2.3 17.8 2 16.5 2 15Z" fill="currentColor"></path><path d="M2 15C2 9.477 6.477 5 12 5C17.523 5 22 9.477 22 15C22 16.5 21.7 17.8 21.1 19H2.9C2.3 17.8 2 16.5 2 15Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path><path d="M12 15L16 10.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path><path d="M13 15C13 15.552 12.552 16 12 16C11.448 16 11 15.552 11 15C11 14.448 11.448 14 12 14C12.552 14 13 14.448 13 15Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></symbol>

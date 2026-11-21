@@ -1,5 +1,5 @@
 {
-  "name": "strata-ledger-proxy",
+  "name": "token-ledger-proxy",
   "mode": "proxy",
   "out_dir": "@here/data",
   "web_root": "",

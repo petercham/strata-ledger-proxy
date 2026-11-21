@@ -1,4 +1,4 @@
-# Strata 账本反代工具
+# Token 账本反代工具（Strata / Basalt 兼容）
 
 你有一台自己托管的推理引擎，团队都在用它——然后你会想知道：**谁在用、用了多少、这台机器还扛不扛得住**。这套小工具就是回答这三个问题的，一个进程装到任何机器上就能跑。
 
@@ -24,8 +24,8 @@
 **三分钟上手**：
 
 ```
-git clone https://github.com/petercham/strata-ledger-proxy.git
-cd strata-ledger-proxy
+git clone https://github.com/petercham/token-ledger-proxy.git
+cd token-ledger-proxy
 python bootstrap.py --init      # 从模板生成本机配置
 python bootstrap.py --check     # 只读自检，不动任何服务
 bash start.sh                   # 试跑（Linux/macOS；Windows 用 start.bat）
@@ -105,14 +105,14 @@ python bootstrap.py --check
 
 | 平台 | 交互式试跑（仅验证包能用） | 生产必须装 |
 |---|---|---|
-| Windows | 双击 `start.bat`，或命令行 `python ledger_watchdog.py` | **启动夹里放一个指向** `service-examples/Strata ledger watchdog.vbs` **的快捷方式**（VBS 本身留在包目录，不要复制过去） |
-| Linux | `bash start.sh`（或先 `chmod +x start.sh` 再 `./start.sh`） | `service-examples/strata-ledger.service`（systemd，`Restart=always`） |
-| macOS | `bash start.sh`（或先 `chmod +x start.sh` 再 `./start.sh`） | `service-examples/com.strata.ledger.plist`（launchd，`KeepAlive`） |
+| Windows | 双击 `start.bat`，或命令行 `python ledger_watchdog.py` | **启动夹里放一个指向** `service-examples/Token ledger watchdog.vbs` **的快捷方式**（VBS 本身留在包目录，不要复制过去） |
+| Linux | `bash start.sh`（或先 `chmod +x start.sh` 再 `./start.sh`） | `service-examples/token-ledger.service`（systemd，`Restart=always`） |
+| macOS | `bash start.sh`（或先 `chmod +x start.sh` 再 `./start.sh`） | `service-examples/com.token.ledger.plist`（launchd，`KeepAlive`） |
 | 开机自启 | 不适用 | Windows 启动夹里放 VBS 的快捷方式；Linux systemd；macOS launchd |
 
 **启动逻辑只有一条**：先起守护进程，由守护进程把服务拉起来。不要在启动脚本里直接 `python collector_proxy.py`——那样服务会跟着某次终端会话一起消失。装好自启件后，用 `python switch_proxy.py --check` 确认服务与守护都在岗；不要靠一个 `Ctrl+C` 就结束的终端窗口长期供服务。Windows 启动夹 VBS（含本包 `service-examples/` 里的示例）给看门狗传了 `--lock-wait 86400`：登录时若旧看门狗还占着防重复锁，新副本会作为热备候补等待，旧看门狗一退出就零缝隙接管，不会「another watchdog already runs」后永久退出。
 
-**为什么 Windows 要用快捷方式**：VBS 按「自己所在目录」去找 `ledger_watchdog.py`；直接把 VBS 复制进启动夹，目录就变成启动夹，主程序找不到且不报错、静默不启动。快捷方式不改变脚本的真实路径，所以能正确定位。目标机若 Python 不在 PATH，设用户环境变量 `STRATA_PYTHON` 指向 `python.exe` 全路径。
+**为什么 Windows 要用快捷方式**：VBS 按「自己所在目录」去找 `ledger_watchdog.py`；直接把 VBS 复制进启动夹，目录就变成启动夹，主程序找不到且不报错、静默不启动。快捷方式不改变脚本的真实路径，所以能正确定位。目标机若 Python 不在 PATH，设用户环境变量 `TOKEN_LEDGER_PYTHON` 指向 `python.exe` 全路径。
 
 想验证包本身没坏，跑：
 

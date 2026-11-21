@@ -222,7 +222,7 @@ def do_selftest():
 
 def main():
     args = sys.argv[1:]
-    print("Strata 账本反代工具 · 便携式安装自检")
+    print("Token 账本反代工具（Strata / Basalt 兼容） · 便携式安装自检")
     print("目录：%s\n" % HERE)
     if "--init" in args:
         return do_init()

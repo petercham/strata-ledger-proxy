@@ -1,0 +1,18 @@
+[Unit]
+Description=Token ledger watchdog (Strata/Basalt compatible)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 改成实际解压目录
+WorkingDirectory=/opt/token-ledger-proxy
+# 改成实际 python3 路径（which python3）
+ExecStart=/usr/bin/python3 /opt/token-ledger-proxy/ledger_watchdog.py
+Restart=always
+RestartSec=5
+StandardOutput=append:/opt/token-ledger-proxy/data/systemd.log
+StandardError=append:/opt/token-ledger-proxy/data/systemd.log
+
+[Install]
+WantedBy=multi-user.target

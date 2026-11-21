@@ -226,7 +226,7 @@ def launch_ledger(args, log_fn):
 
 def parse_args():
     ap = argparse.ArgumentParser(
-        description="Strata ledger watchdog (team port follows config.json listen)")
+        description="Token ledger watchdog (Strata/Basalt backends; team port follows config.json listen)")
     ap.add_argument("--config", default=CONFIG_PATH)
     ap.add_argument("--port", type=int, default=None,
                     help="override the team port; default follows config.json listen")

@@ -1,6 +1,6 @@
 # 清单与来源登记
 
-发行版本：`strata-ledger-proxy` 2026-11-09（本次修订 2026-11-21 · rev16：双后端支持（Basalt `models[].parallel` 闸解析＋监视页 `/slots` 逐槽状态＋进度条速度表退路；见 2.26 节）；rev13：日报补排队闸拦截三指标（见 2.24 节）；rev12：排队闸拦截事件独立日志（`gate-events-YYYY-MM-DD.jsonl` 决策证据流：admitted/queued/released 三形态＋临界区在飞读数＋与记账账本严格分离；见 2.23 节）；rev11a：排队闸跟随形态回流（读数源＝`strata_config` 启动配置文件定死 `parallel` 值＋mtime 守卫缓存；rev11 运行时轮询系定向拆除）；rev11：排队闸跟随引擎实际并发（`gate_follow` 开关＋后台 `/v1/status` 读数缓存＋回退链——读源已被 rev11a 回流替换）；rev10a：排队闸 v3 维护小批（入队观测即时可见＋死字段注释＋票面勘误登记）；rev10：网关侧排队闸 v3（对话请求 FIFO 准入＋SSE 等待心跳）；另含 rev9 CPU 卡型号、rev8 后补的 `config-examples/` 样例、README 踩坑登记、真机截屏配图与省钱计算器口径＋价表随包；git 仓形态，无 ZIP）
+发行版本：`token-ledger-proxy` 2026-11-09（2026-11-21 起更名：仓名/包名 `strata-ledger-proxy`→`token-ledger-proxy`，见 2.27 节；本次修订 2026-11-21 · rev16：双后端支持（Basalt `models[].parallel` 闸解析＋监视页 `/slots` 逐槽状态＋进度条速度表退路；见 2.26 节）；rev13：日报补排队闸拦截三指标（见 2.24 节）；rev12：排队闸拦截事件独立日志（`gate-events-YYYY-MM-DD.jsonl` 决策证据流：admitted/queued/released 三形态＋临界区在飞读数＋与记账账本严格分离；见 2.23 节）；rev11a：排队闸跟随形态回流（读数源＝`strata_config` 启动配置文件定死 `parallel` 值＋mtime 守卫缓存；rev11 运行时轮询系定向拆除）；rev11：排队闸跟随引擎实际并发（`gate_follow` 开关＋后台 `/v1/status` 读数缓存＋回退链——读源已被 rev11a 回流替换）；rev10a：排队闸 v3 维护小批（入队观测即时可见＋死字段注释＋票面勘误登记）；rev10：网关侧排队闸 v3（对话请求 FIFO 准入＋SSE 等待心跳）；另含 rev9 CPU 卡型号、rev8 后补的 `config-examples/` 样例、README 踩坑登记、真机截屏配图与省钱计算器口径＋价表随包；git 仓形态，无 ZIP）
 用途：给另一台机器（代号 5090）替换旧的「旁路边读引擎日志」账本链的**独立工具包**。
 运行要求：本机 Python 3.13 实测通过；3.8 未实测，静态检查未见 3.9+ 专有语法（内置泛型下标 `list[...]`、`X | Y` 联合类型、match 语句等均未使用）。主链仅标准库；`psutil` 与 `nvidia-smi` 为监控增强，缺失时自动降级。目标机若用更旧版本，请先跑 `bootstrap.py --selftest` 验证。
 
@@ -465,6 +465,23 @@
 | `selftest_monitor.py` | 闸行三态断言（无 slots／basalt 逐槽／Strata 聚合）54→**57/57** | 三退路各有守卫 |
 
 selftest 2026-11-21 转正复跑：monitor 57/57、proxy 45/45、watchdog 16 passed 0 failed、daily_report 15/15。`gate_follow` 缺省 false 行为不变＝缺省零回归沿例。
+
+### 2.27 仓名/包名更名：strata-ledger-proxy → token-ledger-proxy（2026-11-21 · 决策者拍板 · 四套全绿复跑）
+
+背景：命名评估中「搜索发现性」为最弱一层（旧名无 llm/token/usage 任一搜索词）；决策者 2026-11-21 拍板彻底更名（曾议「保留 strata 蹭主仓热度」口径作废）。
+
+| 改动面 | 内容 | 兼容处理 |
+|---|---|---|
+| GitHub 远程仓 | `petercham/strata-ledger-proxy` → `petercham/token-ledger-proxy`（API PATCH 2026-11-21） | GitHub 自动重定向旧 clone 链接，老用户不断 |
+| 服务示例三件改名 | `strata-ledger.service`→`token-ledger.service`；`com.strata.ledger.plist`→`com.token.ledger.plist`（Label 同步 `com.token.ledger`）；`Strata ledger watchdog.vbs`→`Token ledger watchdog.vbs` | **已装旧自启件的老机器不用动**——旧文件名在旧安装里已复制/挂快捷方式，路径引用自身；仅新装用新名 |
+| VBS 解释器变量 | `STRATA_PYTHON` → `TOKEN_LEDGER_PYTHON` | 代码级兼容：旧名 `STRATA_PYTHON` 保留为退路，两旧新机器行为不变 |
+| `config.template.json` / `config-examples/*` | `"name"` 改 `token-ledger-proxy` | 在岗 `config.json` 属机器本地文件不随仓改；`name` 键仅展示用途，新旧混用无行为差 |
+| `README.md` / `SKILL.md` | clone 地址、cd 目录、自启件文件名、标题区（新标题「Token 账本反代工具（Strata / Basalt 兼容）」——Strata 关键词保留在标题括号内，蹭热与通用化兼顾）；SKILL frontmatter `name: token-ledger-deploy` | 宿主 Agent 按新名加载；旧会话缓存旧名不报错 |
+| `ledger_watchdog.py` argparse 描述 / `monitor-sprite.svg` 注释 / `start.bat` 窗口标题 | 旧名→新名（start.bat 保持 GBK+CRLF，仅字节级替换 ASCII 串） | 纯展示文案，零契约触碰 |
+| `tickets/` 三张历史票 | **不改**——append-only 证据件，其中 `D:\Projects\strata-ledger-proxy` 路径字样为当时事实 | 历史如实性优先 |
+| CHANGELOG/MANIFEST 历史节旧名 | **不改**——历史登记当时事实；仅发行版本表头加更名说明 | 同上 |
+
+功能代码零触碰（除 argparse 描述行与注释）；更名后四套自测复跑全绿（见 2.26 复跑读数口径）。
 
 ## 三、如实登记：代码分叉
 

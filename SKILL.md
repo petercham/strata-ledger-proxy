@@ -1,10 +1,10 @@
 ---
-name: strata-ledger-deploy
+name: token-ledger-deploy
 description: "Strata 用量账本（反代版）部署工序：在任意机器上安装/迁移/修复「按人统计 token 用量 + 自动日报 + 看门狗保活 + 硬件监控」的独立工具包。当用户要在某台机器部署用量账本、迁移旧读日志账本、抱怨账本掉线/要按 API key 归人统计/要每日用量日报时使用。所有路径相对本包根目录表述。"
 agent_created: true
 ---
 
-# Strata 账本部署工序（strata-ledger-deploy）
+# Token 账本部署工序（token-ledger-deploy）
 
 本文件是给宿主 Agent（WorkBuddy / Claude Code 等）看的执行工序。人读详解见同目录 `README.md`，文件来源与改动登记见 `MANIFEST.md`。本包自包含：纯 Python 标准库，无数据库、无第三方依赖，Windows / Linux / macOS 通用。
 
@@ -58,7 +58,7 @@ agent_created: true
 
 ## 第四步：部署工序（按编号执行，每步给出具体命令）
 
-1. **落位**：把整个 `strata-ledger-proxy` 目录 clone / 拷贝到目标机任意位置（放哪都行）。
+1. **落位**：把整个 `token-ledger-proxy` 目录 clone / 拷贝到目标机任意位置（放哪都行）。
 2. **生成配置**：`python bootstrap.py --init`
 3. **改配置**：编辑 `config.json`，落实第三步拍板的 `listen` / `upstream` / `report_hour` / `report_minute` / `key_labels`；`out_dir` 默认 `@here/data`；`web_root` 已弃用（监控页自带在 `http://<主机>:<端口>/monitor`，本工具不再向任何外部页面注入脚本；旧配置留着不报错，可删）；`force_include_usage` 保持 `true`（流式强制带 usage，关掉＝流式请求全记成 0 token 且不报错）；`lock_port` / `watchdog_lock_port` 默认 43177 / 43176，一般不动但必须互不相同。路径支持 `@here` / `@pkg` / `~` / 相对 / 绝对；纯相对路径按配置文件所在目录解析。
 4. **只读自检**：`python bootstrap.py --check` —— 退出码 0 才能继续。
@@ -66,13 +66,13 @@ agent_created: true
 6. **安装自启件（生产必须，三平台各对应一个文件）**——`start.sh` / `start.bat` 只是前台交互式试跑，关掉终端/SSH 断开服务即消失，**不得用它长期供服务**：
    | 平台 | 装这个文件 | 机制 |
    |---|---|---|
-   | Windows | 启动夹里放**指向** `service-examples/Strata ledger watchdog.vbs` **的快捷方式**（VBS 留在包目录） | 登录自启 |
-   | Linux | `service-examples/strata-ledger.service` | systemd `Restart=always` |
-   | macOS | `service-examples/com.strata.ledger.plist` | launchd `KeepAlive` |
+   | Windows | 启动夹里放**指向** `service-examples/Token ledger watchdog.vbs` **的快捷方式**（VBS 留在包目录） | 登录自启 |
+   | Linux | `service-examples/token-ledger.service` | systemd `Restart=always` |
+   | macOS | `service-examples/com.token.ledger.plist` | launchd `KeepAlive` |
 
    Windows 启动夹 VBS 带 `--lock-wait 86400`：登录时若旧看门狗仍占着防重复锁，新副本作为热备候补等待、旧看门狗退出后零缝隙接管，不会「another watchdog already runs」后永久退出。
 
-   VBS 按自身所在目录找 `ledger_watchdog.py`，所以**不能把 VBS 复制进启动夹**（目录会变成启动夹、主程序找不到且不报错）；快捷方式不改变脚本真实路径。Windows 的 Python 若不在 PATH，设用户环境变量 `STRATA_PYTHON` 指向 `python.exe` 全路径。
+   VBS 按自身所在目录找 `ledger_watchdog.py`，所以**不能把 VBS 复制进启动夹**（目录会变成启动夹、主程序找不到且不报错）；快捷方式不改变脚本真实路径。Windows 的 Python 若不在 PATH，设用户环境变量 `TOKEN_LEDGER_PYTHON` 指向 `python.exe` 全路径。
 
    启动逻辑只有一条：**先起看门狗，由看门狗把服务拉起来**；绝不在启动脚本里直接 `python collector_proxy.py`。
 7. **验收**：按下面「验收判据清单」逐条走一遍，其中在岗确认用 `python switch_proxy.py --check`（只读）。

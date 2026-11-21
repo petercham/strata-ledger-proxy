@@ -1,4 +1,4 @@
-/* Strata 账本工具 · 自持监控页脚本（/monitor 专用）——官方融合视图完整复刻
+/* Token 账本工具 · 自持监控页脚本（/monitor 专用）——官方融合视图完整复刻
  *
  * 完全自持：只依赖本页面自带的 DOM（monitor.html）、本包自有样式
  * （/monitor.css）与图标（/monitor-sprite.svg）。不加载官方页面任何资源，
