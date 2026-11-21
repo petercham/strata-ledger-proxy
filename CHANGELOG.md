@@ -4,6 +4,18 @@
 
 ---
 
+## 2026-11-19（rev16）· 双后端支持：Basalt 启动配置闸解析＋监视页逐槽状态＋进度条速度表退路（功能新增 · 四套全绿 · 2026-11-21 转正）
+
+- **来源与形态说明（如实登记）**：本 rev 四文件改动发生在运行时部署面（`D:/Strata-toolkit/`）而非本地仓＝部署面裸改窗口实例；2026-11-21 对拍发现后按「仓为基底＋四较新文件覆盖」合回本地仓（备份＝`strata-ledger-proxy-BACKUP-20261121`），commit `542eb74` 曾带 `(wip)` 标记，本节即转正登记，历史 commit 不回改。
+- **改动**（`collector_proxy.py`＋`monitor.js`＋`monitor.html`＋`selftest_monitor.py`；`monitor_ext.py`/`daily_report.py` 零触碰）：
+  1. `_strata_parallel_parse` 识别 Basalt 启动配置形态：无顶层 `parallel`、值在 `models[].parallel`——Basalt 单显存一轮一脑，在岗条目不可从文件判定，闸取各条目有效值 **max**（闸只卡上限，沿 INTK-0003 裁定）；无有效 parallel 的条目按单发语义贡献 1；两形态皆无＝读失败退 None→静态兜底，绝不猜。
+  2. 监视页闸态固定行（人类 2026-11-19 口径）：一行常驻＝最大并发＋各状态实际进程数（basalt `/slots` 带 `state`→「读取 n · 生成 n」；Strata `/slots` 仅 `is_processing`→退「运行 n」不谎报拆态；`/slots` 不可得退 live 聚合单跑语义）＋闸排队＋引擎排队。
+  3. 进度条两口径：引擎报 `max_tokens`→完成度（Strata 路）；不报（basalt `live.max_tokens=None` 实测在案）→绿条退速度表，基线 227 tok/s＝本机 basalt 单流满载实测锚点 226.9（压测报告 N=1 在册），条长＝当前 tok/s ÷ 基线每秒实时动。
+  4. `fetchSlots()`＝2.5s 超时 abort、带 key、两引擎同路径不同形状（形状归渲染端）；`monitor.html` 增 `state-gate` 锚点行。
+- **selftest**：monitor **57/57**（新增闸行三态断言：无 slots／basalt 逐槽／Strata 聚合）；proxy **45/45**、watchdog **16 passed 0 failed**、daily_report **15/15** 回归全绿（2026-11-21 转正时复跑读数）。
+
+---
+
 ## 2026-11-19（rev15）· 监视页排队显示改版：独立「等待中」卡撤销、并入顶部模型状态卡＋汇总行日期口径（人类直令 · 四套全绿）
 
 - **现象**：人类 13:45 令（逐字要义）：「等待中卡片根本没有意义……直接放在顶部的模型状态即可！里面不是有个队列吗？只需要区分网关队列还是引擎队列，以及在实际有排队的时候，往标签里面放一个数字即可」。另一令（INTK-0010）：汇总行「自 周二00:21」跨周歧义，「至少应该（实际年月日期）」。

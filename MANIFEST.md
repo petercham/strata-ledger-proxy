@@ -1,6 +1,6 @@
 # 清单与来源登记
 
-发行版本：`strata-ledger-proxy` 2026-11-09（本次修订 2026-11-18 · rev12：排队闸拦截事件独立日志（`gate-events-YYYY-MM-DD.jsonl` 决策证据流：admitted/queued/released 三形态＋临界区在飞读数＋与记账账本严格分离；见 2.23 节）；rev11a：排队闸跟随形态回流（读数源＝`strata_config` 启动配置文件定死 `parallel` 值＋mtime 守卫缓存；rev11 运行时轮询系定向拆除）；rev11：排队闸跟随引擎实际并发（`gate_follow` 开关＋后台 `/v1/status` 读数缓存＋回退链——读源已被 rev11a 回流替换）；rev10a：排队闸 v3 维护小批（入队观测即时可见＋死字段注释＋票面勘误登记）；rev10：网关侧排队闸 v3（对话请求 FIFO 准入＋SSE 等待心跳）；另含 rev9 CPU 卡型号、rev8 后补的 `config-examples/` 样例、README 踩坑登记、真机截屏配图与省钱计算器口径＋价表随包；git 仓形态，无 ZIP）
+发行版本：`strata-ledger-proxy` 2026-11-09（本次修订 2026-11-21 · rev16：双后端支持（Basalt `models[].parallel` 闸解析＋监视页 `/slots` 逐槽状态＋进度条速度表退路；见 2.26 节）；rev13：日报补排队闸拦截三指标（见 2.24 节）；rev12：排队闸拦截事件独立日志（`gate-events-YYYY-MM-DD.jsonl` 决策证据流：admitted/queued/released 三形态＋临界区在飞读数＋与记账账本严格分离；见 2.23 节）；rev11a：排队闸跟随形态回流（读数源＝`strata_config` 启动配置文件定死 `parallel` 值＋mtime 守卫缓存；rev11 运行时轮询系定向拆除）；rev11：排队闸跟随引擎实际并发（`gate_follow` 开关＋后台 `/v1/status` 读数缓存＋回退链——读源已被 rev11a 回流替换）；rev10a：排队闸 v3 维护小批（入队观测即时可见＋死字段注释＋票面勘误登记）；rev10：网关侧排队闸 v3（对话请求 FIFO 准入＋SSE 等待心跳）；另含 rev9 CPU 卡型号、rev8 后补的 `config-examples/` 样例、README 踩坑登记、真机截屏配图与省钱计算器口径＋价表随包；git 仓形态，无 ZIP）
 用途：给另一台机器（代号 5090）替换旧的「旁路边读引擎日志」账本链的**独立工具包**。
 运行要求：本机 Python 3.13 实测通过；3.8 未实测，静态检查未见 3.9+ 专有语法（内置泛型下标 `list[...]`、`X | Y` 联合类型、match 语句等均未使用）。主链仅标准库；`psutil` 与 `nvidia-smi` 为监控增强，缺失时自动降级。目标机若用更旧版本，请先跑 `bootstrap.py --selftest` 验证。
 
@@ -450,6 +450,21 @@
 | `README.md` / `MANIFEST.md` / `CHANGELOG.md` | 闸段监视页口径一句改写／本节／rev15 节 | 登记 |
 
 生效＝同步在岗即生效（`_read_asset` 每请求现读盘），不依赖换脑。
+
+### 2.26 rev16：双后端支持——Basalt 启动配置闸解析＋监视页逐槽状态＋进度条速度表退路（2026-11-19 改动 · 2026-11-21 合仓转正 · 四套全绿）
+
+背景：在岗引擎新增 Basalt（basalt_config.json 形态）后，rev11a 的 `gate_follow` 只认 Strata 顶层 `parallel`，Basalt 形态会被判为「读失败」退静态兜底；监视页对 basalt `/slots`（带 `state` 逐槽）与 `live.max_tokens=None` 两态无呈现口径。
+
+**形态警示（如实登记）**：本 rev 四文件改动直接发生在运行时部署面而非本地仓＝「部署面裸改」窗口实例；2026-11-21 会话对拍发现，按「仓为基底＋仅四较新文件覆盖」合回（禁单向覆盖——部署面当时还缺 9 个仓跟踪文件），备份 `strata-ledger-proxy-BACKUP-20261121`，commit `542eb74`。
+
+| 文件 | 改动 | 为什么 |
+|---|---|---|
+| `collector_proxy.py` | `_strata_parallel_parse` 双形态：顶层 int `parallel`（Strata，语义沿 rev11a）；无顶层键而有 `models[]` 列表（Basalt）→取各条目有效 parallel 的 **max**，无效条目贡献 1；两形态皆无＝None＝失败态退静态，绝不猜 | Basalt 单显存一轮一脑，在岗条目文件不可判→闸只卡上限（INTK-0003 裁定口径延伸）；失败态语义与 rev11a 一致 |
+| `monitor.js` | `renderState` 增 slots 参＋闸态固定行（`state-gate`）：最大并发＋逐槽「读取 n · 生成 n」（basalt）／「运行 n」（Strata `is_processing`）／live 聚合退路＋闸排队＋引擎排队；`fetchSlots()` 2.5s abort；进度条两口径（`max_tokens` 完成度／速度表基线 227 tok/s＝本机 basalt 满载实测 226.9） | 人类 2026-11-19 口径＝闸态一行常驻；两引擎 `/slots` 同路径不同形状，取数与形状解析分离；basalt 不报 max_tokens 时进度语义不谎报 |
+| `monitor.html` | `state-gate` 锚点行 | 闸态固定行落位 |
+| `selftest_monitor.py` | 闸行三态断言（无 slots／basalt 逐槽／Strata 聚合）54→**57/57** | 三退路各有守卫 |
+
+selftest 2026-11-21 转正复跑：monitor 57/57、proxy 45/45、watchdog 16 passed 0 failed、daily_report 15/15。`gate_follow` 缺省 false 行为不变＝缺省零回归沿例。
 
 ## 三、如实登记：代码分叉
 
