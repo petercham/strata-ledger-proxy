@@ -83,6 +83,7 @@ sys.path.insert(0, HERE)              # find paths.py however this module is loa
 CONFIG_PATH = os.path.join(HERE, "config.json")
 LOG_PATH = os.path.join(HERE, "ledger-watchdog.log")
 CHILD_LOG_NAME = "collector-proxy.log"   # the proxy's own console output
+ENGINE_LOG_NAME = "engine-child.log"     # the guarded engine's own console output
 WAKE_FLAG_NAME = "relaunch-now.flag"
 
 LEDGER_HOST = "127.0.0.1"
@@ -301,9 +302,12 @@ def launch_engine(cwd, cmd, log_fn):
 
     Every engine this watchdog starts is its own child; the port probe decides
     whether it is needed. No creation-flag code runs on non-Windows platforms.
+    Console output goes to its own file (same separation discipline as
+    collector-proxy.log: engine tracebacks must never bury the watchdog log).
     """
     log_path = LOG_PATH
-    logf = open(log_path, "a", encoding="utf-8")
+    engine_log = os.path.join(os.path.dirname(log_path) or ".", ENGINE_LOG_NAME)
+    logf = open(engine_log, "a", encoding="utf-8")
     popen_kwargs = {
         "cwd": cwd or HERE,
         "stdin": subprocess.DEVNULL,
@@ -316,6 +320,7 @@ def launch_engine(cwd, cmd, log_fn):
     else:
         popen_kwargs["start_new_session"] = True
     proc = subprocess.Popen(cmd, **popen_kwargs)
+    logf.close()   # the child kept its own handle; the parent must not leak one
     log_fn(f"engine relaunch issued: pid={proc.pid} cmd={cmd!r}")
     return proc
 
