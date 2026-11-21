@@ -290,27 +290,47 @@ def _push_gate(gate):
 
 
 def _strata_parallel_parse(path):
-    """rev11a A-1: pure parse helper for the Strata startup-config file.
+    """rev11a A-1 + rev13 dual-backend: pure parse helper for the ACTIVE
+    engine's startup-config file (Strata OR Basalt).
 
     Called ONLY when the mtime/size guard below goes stale (0-1 times per
     request, 0 in the steady state). Returns the effective gate limit for the
     follow mode, or None when the file cannot be read/parsed at all.
 
-    Field semantics mirror the engine source of truth (serve/server.py:3588-3602
-    read-only reference): a top-level "parallel" that is an int (not bool) and
-    >= 1 is returned as-is — NO PARALLEL_MAX clamping here (clamping is the
-    engine's business, ticket A-4). False/None/absent/1/bool/non-int/negative
-    all mean the engine runs single-shot, so the gate caps at 1. Any file or
-    JSON failure returns None (never raises); the caller falls back to static.
-    Zero urlreq, zero threads.
+    Strata format (serve/server.py:3588-3602 read-only reference): a top-level
+    "parallel" that is an int (not bool) and >= 1 is returned as-is — NO
+    PARALLEL_MAX clamping here (clamping is the engine's business, ticket A-4).
+    False/None/absent/1/bool/non-int/negative all mean the engine runs
+    single-shot, so the gate caps at 1.
+
+    Basalt format (basalt_config.json, rev13 2026-11-19): NO top-level
+    "parallel"; the value lives per-model as models[].parallel. Basalt is a
+    single-VRAM one-brain-at-a-time router, so which entry is on duty cannot
+    be read from the file — the gate takes the MAX across entries that carry a
+    valid parallel (gate caps the upper bound, INTK-0003). An entry without a
+    valid parallel contributes 1 (its single-shot semantics). A file that has
+    neither shape (no top-level int AND no models list) is a read failure ->
+    None (never guesses); the caller falls back to static. Any file or JSON
+    failure returns None. Zero urlreq, zero threads.
     """
     try:
         with open(path, encoding="utf-8") as f:
             obj = json.load(f)
-        p = obj.get("parallel") if isinstance(obj, dict) else None
-        if isinstance(p, int) and not isinstance(p, bool) and p >= 1:
-            return p
-        return 1
+        if not isinstance(obj, dict):
+            return None
+        p = obj.get("parallel")
+        if isinstance(p, int) and not isinstance(p, bool):
+            return p if p >= 1 else 1
+        if "parallel" in obj:      # key present but not int (bool/str/None) = Strata single-shot
+            return 1
+        models = obj.get("models")
+        if isinstance(models, list) and models:
+            vals = []
+            for m in models:
+                mp = m.get("parallel") if isinstance(m, dict) else None
+                vals.append(mp if isinstance(mp, int) and not isinstance(mp, bool) and mp >= 1 else 1)
+            return max(vals)
+        return None                # neither engine shape recognised = failure state, no guess
     except Exception:
         return None
 

@@ -207,7 +207,7 @@
   }
 
   // ================= model state card（/metrics live，口径照官方 renderMonitor） =================
-  function renderState(m, gate) {
+  function renderState(m, gate, slots) {
     const live = (m && m.live) || {};
     const requests = (m && m.requests) || [];
     const last = requests[0];
@@ -234,7 +234,15 @@
     } else if (live.state === "generating") {
       label = "生成中";
       delete prog.dataset.tone;
-      pct = live.max_tokens ? Math.min(100, (100 * live.generated) / live.max_tokens) : 0;
+      // 进度两口径（2026-11-19 rev13）：引擎报了 max_tokens → 完成度（Strata 路）；
+      // 没报（basalt live.max_tokens=None 实测在案）→ 绿条退为速度表：
+      // 基线 227 tok/s ＝ 本机 basalt 单流满载实测锚点 226.9（压测报告
+      // N=1 在册，2026-11-19），条长＝当前 tok_s/基线，随每秒刷新实时动。
+      if (live.max_tokens) {
+        pct = Math.min(100, (100 * live.generated) / live.max_tokens);
+      } else if (live.tok_s != null) {
+        pct = Math.min(100, (100 * live.tok_s) / 227);
+      }
       detail = `${fmt(live.generated)} tokens · ${fmt(live.tok_s, 1)} tok/s`;
     } else if (live.state === "unloaded") {
       label = "未加载";
@@ -246,6 +254,30 @@
       if (gwQ > 0 && engQ > 0) label = `排队 ${fmt(qTotal)}（网关 ${fmt(gwQ)} · 引擎 ${fmt(engQ)}）`;
       else if (gwQ > 0) label = `网关队列 ${fmt(gwQ)} 个在等闸`;
       else if (engQ > 0) label = `引擎队列 ${fmt(engQ)} 个在排队`;
+    }
+    // 闸态固定行＝一行左侧常驻（2026-11-19 human call）：最大允许并发、
+    // 各状态实际进程数（按 /slots 逐槽聚合）、闸排队、引擎排队。
+    // basalt 每槽有 state（idle/prefill/decoding）；Strata 每槽只有
+    // is_processing（bool）→ 退为"运行 n"不拆态。数据源 /slots 经网关透传。
+    const gateEl = $("state-gate");
+    if (gateEl) {
+      const lim = gate ? fmt(gate.limit) : "—";
+      let busySeg = "在跑 —";
+      if (Array.isArray(slots) && slots.length) {
+        const hasState = slots.some((s) => typeof s.state === "string");
+        if (hasState) {
+          const pre = slots.filter((s) => s.state === "prefill").length;
+          const dec = slots.filter((s) => s.state === "decoding").length;
+          busySeg = `读取 ${fmt(pre)} · 生成 ${fmt(dec)}`;
+        } else {
+          busySeg = `运行 ${fmt(slots.filter((s) => s.is_processing).length)}`;
+        }
+      } else if (m && m.live && m.live.state) {
+        // /slots 不可得时退聚合口径：live 汇总（单跑语义，不谎报多槽）
+        const st = m.live.state;
+        busySeg = (st === "reading" || st === "generating") ? "运行 1" : "运行 0";
+      }
+      gateEl.textContent = `最大并发 ${lim} · ${busySeg} · 闸排队 ${gate ? fmt(gwQ) : "—"} · 引擎排队 ${fmt(engQ)}`;
     }
     $("state-label").textContent = label;
     $("state-detail").textContent = detail;
@@ -706,8 +738,22 @@
       return await r.json();
     } finally { clearTimeout(timer); }
   }
-  async function fetchMetrics() {
+  async function fetchSlots() {
+    // 每槽状态：basalt GET /slots（带 state）、Strata GET /slots（只有
+    // is_processing）。两引擎同路径不同形状，本函数只管取，形状归渲染端。
     const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 2500);
+    try {
+      const headers = {};
+      if (apiKey) headers.Authorization = "Bearer " + apiKey;
+      const r = await fetch("/slots", { cache: "no-store", signal: controller.signal, headers });
+      if (!r.ok) return null;
+      const d = await r.json();
+      return Array.isArray(d) ? d : null;
+    } catch { return null; }
+    finally { clearTimeout(timer); }
+  }
+  async function fetchMetrics() {    const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 3500);
     try {
       const headers = {};
@@ -728,16 +774,20 @@
 
   async function tick() {
     if (!$("metrics")) { setTimeout(tick, TICK_MS); return; }
-    let ext = null, met = null, extErr = null, metErr = null;
+    let ext = null, met = null, slots = null, extErr = null, metErr = null, renderErr = null;
     await Promise.all([
       fetchExt().then((d) => { ext = d; }, (e) => { extErr = e; }),
       fetchMetrics().then((d) => { met = d; }, (e) => { metErr = e; }),
+      fetchSlots().then((d) => { slots = d; }),
     ]);
 
     // 卡片区顺序照旧融合视图：速度 → 每显卡 → PCIe → CPU → 系统内存 → 硬盘 → 网卡。
     // ensure() 在卡片第一次出现时按调用顺序插进网格，所以这里先渲染谁、谁就在前。
+    // 渲染段整体 try/catch（2026-11-19）：任何一处 render 抛错只坏本拍并显式
+    // 报状态行，绝不吞掉尾部 setTimeout——一处异形数据不再冻结全页图表。
+    try {
     if (met) {
-      renderState(met, ext && ext.gate);
+      renderState(met, ext && ext.gate, slots);
       renderSpeed(met);
     }
     if (ext) {
@@ -769,10 +819,15 @@
       renderRequests(met);
       renderConvCache(met.conversation_cache);
     }
+    } catch (e) {
+      renderErr = e;                   // 状态行显式报渲染异常，不冒充连接断
+      if (window.console && console.error) console.error("monitor render error:", e);
+    }
 
     const st = $("mx-status");
     if (st) {
-      if (extErr && metErr) { st.textContent = "连不上 /ext.json 与 /metrics（服务没在跑或网络断了）"; st.className = "bad"; }
+      if (renderErr) { st.textContent = "本拍渲染异常（图表可能缺一条）：" + (renderErr.message || renderErr); st.className = "bad"; }
+      else if (extErr && metErr) { st.textContent = "连不上 /ext.json 与 /metrics（服务没在跑或网络断了）"; st.className = "bad"; }
       else if (extErr) { st.textContent = "硬件采样断了（/ext.json 连不上）；引擎指标正常"; st.className = "bad"; }
       else if (metricsNeedKey) { st.textContent = "引擎指标需要 API key（顶部输入框填入即可）；硬件卡正常"; st.className = "bad"; }
       else if (metErr) { st.textContent = "引擎 /metrics 连不上（引擎没起或反代没转发）；硬件卡正常"; st.className = "bad"; }

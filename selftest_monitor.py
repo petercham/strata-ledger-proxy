@@ -117,7 +117,8 @@ const IDS = ["api-key", "apikey-note", "apikey-row", "apikey-row-inner",
   "cc-slots-bar", "cc-slots-text", "cc-sum", "ctx-fill", "ctx-pct", "ctx-sub",
   "metrics", "mx-status", "ram-bar", "ram-progress", "ram-text", "req-all",
   "req-body", "req-totals", "req-wrap", "slots-bar", "slots-text",
-  "state-badges", "state-bar", "state-detail", "state-label", "state-progress",
+  "state-badges", "state-bar", "state-detail", "state-gate",
+  "state-label", "state-progress",
   "temp-bar", "temp-text", "theme-btn", "theme-icon"];
 for (const id of IDS) els[id] = makeEl(id);
 
@@ -596,7 +597,8 @@ const IDS = ["api-key", "apikey-note", "apikey-row", "apikey-row-inner",
   "cc-slots-bar", "cc-slots-text", "cc-sum", "ctx-fill", "ctx-pct", "ctx-sub",
   "metrics", "mx-status", "ram-bar", "ram-progress", "ram-text", "req-all",
   "req-body", "req-totals", "req-wrap", "slots-bar", "slots-text",
-  "state-badges", "state-bar", "state-detail", "state-label", "state-progress",
+  "state-badges", "state-bar", "state-detail", "state-gate",
+  "state-label", "state-progress",
   "temp-bar", "temp-text", "theme-btn", "theme-icon"];
 for (const id of IDS) els[id] = makeEl(id);
 
@@ -618,7 +620,12 @@ global.AbortController = class { constructor() { this.signal = {}; } abort() {} 
 // __gate is swapped between explicit ticks: absent -> queued=2 -> queued=0
 global.__gate = undefined;
 global.__tick = null;          // captured from monitor.js's own setTimeout(tick, TICK_MS)
+global.__slots = undefined;    // /slots fixture: undefined -> 404, else the array
 global.fetch = async (url, opts) => {
+  if (String(url).includes("/slots")) {
+    if (global.__slots === undefined) return { ok: false, status: 404, json: async () => null };
+    return { ok: true, status: 200, json: async () => global.__slots };
+  }
   if (String(url).includes("/metrics")) {
     return { ok: true, status: 200, json: async () => ({
       engine: { state: "idle", expert_slots: 2, expert_cache_mib: 512, max_context: 131072 },
@@ -658,6 +665,22 @@ try {
     await global.__tick();                            // tick #3: queued back to 0 -> label back to idle
     const label3 = (els["state-label"] && els["state-label"].textContent) || "";
     console.log("G0PRUNED " + (gateCard() ? 0 : 1) + " LABEL3 " + JSON.stringify(label3));
+    global.__gate = { inflight: 3, queued: 2, limit: 7, waited_total: 1500, beat_total: 3 };
+    await global.__tick();                            // tick #4: fixed one-row gate line, no /slots yet
+    const g4 = (els["state-gate"] && els["state-gate"].textContent) || "";
+    console.log("G3MN " + JSON.stringify(g4));
+    global.__slots = [
+      {id:0, is_processing:true, state:"decoding"}, {id:1, is_processing:true, state:"prefill"},
+      {id:2, is_processing:true, state:"decoding"}, {id:3, is_processing:false, state:"idle"},
+      {id:4, is_processing:false, state:"idle"}, {id:5, is_processing:false, state:"idle"},
+      {id:6, is_processing:false, state:"idle"}];
+    await global.__tick();                            // tick #5: basalt-shape /slots -> per-state counts
+    const g5 = (els["state-gate"] && els["state-gate"].textContent) || "";
+    console.log("G4SLOTS " + JSON.stringify(g5));
+    global.__slots = [{id:0, is_processing:true}, {id:1, is_processing:false}];
+    await global.__tick();                            // tick #6: Strata-shape /slots -> 运行 n
+    const g6 = (els["state-gate"] && els["state-gate"].textContent) || "";
+    console.log("G5STRATA " + JSON.stringify(g6));
     console.log("GATE SMOKE DONE");
     process.exit(0);
   })().catch((e) => { console.error("GATE SMOKE FAIL:", (e && e.stack) || e); process.exit(1); });
@@ -686,6 +709,26 @@ try {
                 % (_g0, _nocard, _gw, _gp0, (_gr.stderr or _out or "").strip()[-120:]))
             rec("gate queue label source-worded", _gw,
                 "line=%r" % (_line2[:120],))
+            # 2026-11-19 human call: state card shows concurrency m/n (inflight/
+            # limit, gateway-side counters) in EVERY state, and per-source queue
+            # counts (闸排队 vs 引擎排队) whenever either is non-zero.
+            _l4 = _d4 = ""
+            for _ln in _out.splitlines():
+                if _ln.startswith("G3MN"):
+                    _l4 = _ln[5:]
+            _mn = "最大并发 7" in _l4 and "闸排队 2" in _l4 and "引擎排队 0" in _l4
+            _g5 = ""
+            for _ln in _out.splitlines():
+                if _ln.startswith("G4SLOTS"):
+                    _g5 = _ln[9:]
+            _sl = "读取 1 · 生成 2" in _g5 and "闸排队 2" in _g5 and "引擎排队 0" in _g5
+            _g6 = ""
+            for _ln in _out.splitlines():
+                if _ln.startswith("G5STRATA"):
+                    _g6 = _ln[10:]
+            _st = "运行 1" in _g6
+            rec("gate row: limit + per-state running + both queue counts, one line", _mn and _sl and _st,
+                "no-slots=%r basalt=%r strata=%r" % (_l4[:120], _g5[:120], _g6[:120]))
         finally:
             try:
                 os.unlink(_gp)
