@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-11-22（rev17）· 看门狗引擎看护：一快捷方式拉起全套（看门狗→反代＋后端引擎）（功能新增 · 四套全绿）
+
+- **现象/动机**：人类令（逐字要义）：「升级看门狗，同时看守反代和反代沟通的后端，并且当前具体使用 Strata 还是 Basalt 后端，直接在看门狗程序配置，Windows 启动目录里只需要放一个拉起看门狗的快捷方式即可把全套服务拉起来」。此前引擎自启挂在另一条登录自启链上（Strata autostart.bat），与看门狗两条自启并存＝引擎崩了反代空转、自启面双入口。
+- **改动**（`ledger_watchdog.py`＋`config.template.json`＋`selftest_watchdog.py`；`collector_proxy.py`/`monitor*` 零触碰）：
+  1. 四配置键（每轮热读，改值不重启）：`guard_engine`（缺省 **false**＝行为与 rev16 逐字节一致）、`engine_backend`（"strata"/"basalt"，日志标注＋配置自述）、`engine_launch`（`{cmd: argv 数组, cwd 支持 @here/@pkg/~}`）、`engine_grace_s`（缺省 120s，引擎刚拉起后宽限静默——模型加载期端口本就关着，防重复拉爆显存）。
+  2. 引擎探测＝从 `upstream` URL 解析尾端口（与 listen 同法，支持 IPv6 括号形制），raw TCP 与反代同法；纪律沿例：健康端口永不触碰、引擎一律本看门狗 detached 子进程、cooldown＋grace 双限速、看护异常不拖垮反代循环（独立 try）。
+  3. 启动日志明示两态：`engine guard ON: backend=… probe=…grace=…`／`engine guard off`；cmd 非法（非列表/空/含非字符串项）＝当轮静默关闸不崩循环。
+- **与既有看护划界**：Strata 官方壳自带引擎 restart（tries=3），用 Strata 时 `guard_engine` 保持 false 勿双看护；Basalt 的 serve→engine 看护只兜"serve 壳内引擎"，serve 壳进程本身没人看——Basalt 部署面开 guard。引擎切换/重启仍走人类窗口（`switch_proxy.py` 有会话硬拒绝纪律延伸到引擎＝人类拍板）。
+- **selftest**：watchdog 套 **16→31**（看护单测 8＝缺省关/无 cmd 关/四键解析/尾端口含路径与 IPv6/非法 cmd 两项关/坏配置不崩；集成 7＝缺省日志态/热开闸不重启/拉起/日志标注/宽限期抑制二拉（计数=1）/宽限后单次补拉（计数=2）/反代假服务全程存活）。proxy **45/45**、monitor **57/57**、daily_report **15/15** 回归全绿。
+- **边界（不粉饰）**：引擎带外启动（人肉 bat）后看门狗不认领其进程所有权，仍按端口探测；grace 期内引擎真死＝最多晚 grace 秒补岗；双看门狗交接窗口内引擎探测短暂空窗（看门狗锁切换既有语义）。
+
+---
+
 ## 2026-11-22（本地补丁 · 未推送）· 反代控制台输出独立落 `collector-proxy.log`
 
 - **症状**：客户端请求中途断开时，Python `socketserver` 会往子进程 stderr 打整段 traceback；此前子进程 stdout/stderr 与看门狗自己的日志共用 `ledger-watchdog.log`，把 probe/relaunch 这些运维第一眼要看的行埋掉。
@@ -11,7 +24,6 @@
 - **不动面**：看门狗自身日志、重启判定、端口与锁语义全部不变；子进程仍 `DETACHED_PROCESS`，仍由看门狗单独养活。
 - **验证**：`selftest_watchdog.py` 16/16、`bootstrap.py --selftest` 三套全绿。
 - **生效时点**：无需停机——新代码在下一次看门狗/反代重启（含重开机）时接管；改动前已在跑的进程仍写旧文件，直到它自己换代。
-
 ---
 
 ## 2026-11-21（更名）· 仓名/包名 strata-ledger-proxy → token-ledger-proxy（决策者拍板 · 功能代码零触碰）

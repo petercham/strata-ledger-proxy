@@ -22,6 +22,7 @@ import time
 ROOT = os.path.dirname(os.path.abspath(__file__))
 WD_SCRIPT = os.path.join(ROOT, "ledger_watchdog.py")
 PORT = 19080
+EPORT = 19090
 LOCK = 43976
 KILL_SIG = getattr(signal, "SIGKILL", 9)
 PASS, FAIL = [], []
@@ -105,6 +106,41 @@ def main():
         f.write("{ broken json")
     rec("broken config does not crash", wd.read_settings(cfg) == (5.0, 5.0))
     rec("port_is_up on a closed port is False", wd.port_is_up("127.0.0.1", PORT) is False)
+
+    print("=== engine guard unit checks (rev17) ===")
+    write_cfg()
+    g = wd.read_engine_settings(cfg)
+    rec("engine guard default off", g[0] is False and g[2] is None, str(g[:3]))
+    write_cfg(guard_engine=True)
+    g = wd.read_engine_settings(cfg)
+    rec("guard on without cmd stays off", g[0] is False, str(g[:3]))
+    write_cfg(guard_engine=True, engine_backend="Basalt",
+              upstream="http://127.0.0.1:19099/",
+              engine_launch={"cmd": [sys.executable, "-c", "pass"], "cwd": tmp},
+              engine_grace_s=7)
+    g = wd.read_engine_settings(cfg)
+    rec("guard parses backend/port/cwd/grace",
+        g[0] is True and g[1] == "basalt" and g[3] == os.path.normpath(tmp)
+        and g[4] == 7.0 and g[5] == 19099, str(g[1:]))
+    write_cfg(guard_engine=True, upstream="http://host:7000/v1",
+              engine_launch={"cmd": ["x"]})
+    g = wd.read_engine_settings(cfg)
+    rec("upstream trailing port parse with path", g[5] == 7000, str(g[5]))
+    write_cfg(guard_engine=True, upstream="http://[::1]:8787",
+              engine_launch={"cmd": ["x"]})
+    g = wd.read_engine_settings(cfg)
+    rec("upstream IPv6 bracket port parse", g[5] == 8787, str(g[5]))
+    write_cfg(guard_engine=True, engine_launch={"cmd": ["ok", 123]})
+    g = wd.read_engine_settings(cfg)
+    rec("non-string cmd token -> guard stays off", g[0] is False, str(g[:3]))
+    write_cfg(guard_engine=True, engine_launch={"cmd": []})
+    g = wd.read_engine_settings(cfg)
+    rec("empty cmd -> guard stays off", g[0] is False, str(g[:3]))
+    with open(cfg, "w", encoding="utf-8") as f:
+        f.write("{ broken json")
+    g = wd.read_engine_settings(cfg)
+    rec("broken config -> engine guard off, no crash", g[0] is False)
+
     logs = []
     state = [0.0]
     t0 = time.monotonic()
@@ -188,6 +224,69 @@ def main():
     rec("a new fake pid was issued", len(fake_pids()) > before,
         "%d -> %d" % (before, len(fake_pids())))
 
+    print("=== engine guard integration (rev17, temporary port %d) ===" % EPORT)
+    rec("startup log states guard was off by default",
+        "engine guard off (guard_engine not true in config)" in wdlog_text())
+    fake2 = os.path.join(tmp, "fake_engine.py")
+    with open(fake2, "w", encoding="utf-8") as f:
+        f.write(FAKE_SERVICE)
+    epidfile = os.path.join(tmp, "engine.pid")
+    # hot-enable: the RUNNING watchdog must pick this up next cycle, no restart
+    write_cfg(watchdog_interval_s=2, watchdog_relaunch_cooldown_s=1,
+              guard_engine=True, engine_backend="basalt",
+              upstream="http://127.0.0.1:%d/" % EPORT,
+              engine_launch={"cmd": [sys.executable, fake2, str(EPORT), epidfile],
+                             "cwd": tmp},
+              engine_grace_s=3)
+    guarded = False
+    for _ in range(30):
+        if "engine guard settings: backend=basalt" in wdlog_text():
+            guarded = True
+            break
+        time.sleep(0.2)
+    rec("guard hot-enabled from config without restart", guarded)
+    ok = False
+    for _ in range(40):
+        if port_up(EPORT):
+            ok = True
+            break
+        time.sleep(0.2)
+    rec("down engine port -> fake engine launched", ok)
+    rec("engine launch logged", "engine relaunch issued" in wdlog_text())
+
+    # kill the engine right after its launch: grace window must suppress a
+    # second launch, then after grace expires one relaunch must follow.
+    epids = []
+    try:
+        with open(epidfile, encoding="utf-8") as f:
+            epids = [int(x) for x in f.read().split()]
+    except OSError:
+        pass
+    for pid in set(epids):
+        try:
+            os.kill(pid, KILL_SIG)
+        except OSError:
+            pass
+    seen_grace = False
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < 2.6:
+        if "launch grace" in wdlog_text():
+            seen_grace = True
+            break
+        time.sleep(0.2)
+    rec("engine relaunch suppressed inside grace", seen_grace
+        and wdlog_text().count("engine relaunch issued") == 1,
+        "relaunches=%d" % wdlog_text().count("engine relaunch issued"))
+    second = False
+    for _ in range(40):
+        if wdlog_text().count("engine relaunch issued") >= 2 and port_up(EPORT):
+            second = True
+            break
+        time.sleep(0.3)
+    rec("after grace a single relaunch follows", second,
+        "relaunches=%d" % wdlog_text().count("engine relaunch issued"))
+    rec("ledger fake survived the whole engine-guard test", port_up(PORT))
+
     print("--- watchdog log (for attribution) ---")
     for line in wdlog_text().strip().splitlines():
         print("   ", line)
@@ -203,6 +302,15 @@ def main():
             os.kill(pid, KILL_SIG)
         except OSError:
             pass
+    try:
+        with open(epidfile, encoding="utf-8") as f:
+            for pid in set(int(x) for x in f.read().split()):
+                try:
+                    os.kill(pid, KILL_SIG)
+                except OSError:
+                    pass
+    except OSError:
+        pass
     time.sleep(0.2)
     shutil.rmtree(tmp, ignore_errors=True)
     print("\nRESULT: %d passed, %d failed" % (len(PASS), len(FAIL)))

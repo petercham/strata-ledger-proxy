@@ -46,6 +46,21 @@ This watchdog itself holds 127.0.0.1:43176 as its own single-instance lock:
 both the Startup-folder VBS and start-strata.bat may try to launch it, and a
 second copy must leave quietly instead of running a duplicate probe loop.
 
+ENGINE GUARD (rev17, 2026-11-22): the watchdog can also guard the backend the
+proxy talks to (Strata or Basalt), so ONE startup-folder entry brings up the
+whole chain: watchdog -> ledger proxy + engine. Controlled by config.json keys
+(read fresh every cycle, like the interval — no restart needed to change them):
+  "guard_engine": false        # default OFF: byte-identical pre-rev17 behaviour
+  "engine_backend": "basalt"   # "strata" | "basalt" (labelled in the log)
+  "engine_launch": {"cmd": [...], "cwd": "..."}   # argv list; cwd optional,
+                               # supports @here/@pkg/~ expansion
+  "engine_grace_s": 120        # after an engine launch, stay quiet this long
+                               # (model loading holds the port closed for a while)
+The engine probe is the TCP port parsed from config.json "upstream" (same
+raw-socket probe as 8080). Same rules as the proxy: a healthy port is never
+touched, every engine it starts is its own detached child, duplicate launches
+are bounded by cooldown + grace, and failures never take the proxy loop down.
+
   python ledger_watchdog.py       # use a console interpreter, not pythonw.exe
 
 Selftest / temporary-port overrides (never used in production):
@@ -141,6 +156,56 @@ def read_settings(config_path):
         return DEFAULT_INTERVAL_S, DEFAULT_COOLDOWN_S
 
 
+ENGINE_DEFAULT_PORT = 8787
+DEFAULT_ENGINE_GRACE_S = 120.0
+
+
+def read_engine_settings(config_path):
+    """Engine-guard config, read fresh every cycle (hot like the interval).
+
+    Returns (guard, backend, cmd, cwd, grace_s, engine_port). guard=False unless
+    config.json says "guard_engine": true — the pre-rev17 default path never
+    touches any of this. cmd must be a non-empty list of strings or the guard
+    silently stays off for this cycle (a broken key must never stop the proxy
+    loop). cwd supports @here/@pkg/~. engine_port comes from the "upstream"
+    URL — same trailing-port parse as listen (http://host:port/... forms).
+    """
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            cfg = json.load(f)
+    except (OSError, ValueError, TypeError, AttributeError):
+        return False, "", None, "", DEFAULT_ENGINE_GRACE_S, ENGINE_DEFAULT_PORT
+    if not isinstance(cfg, dict) or cfg.get("guard_engine") is not True:
+        return False, "", None, "", DEFAULT_ENGINE_GRACE_S, ENGINE_DEFAULT_PORT
+    backend = str(cfg.get("engine_backend") or "").strip().lower()
+    launch = cfg.get("engine_launch")
+    cmd = None
+    cwd = ""
+    if isinstance(launch, dict):
+        raw_cmd = launch.get("cmd")
+        if (isinstance(raw_cmd, list) and raw_cmd
+                and all(isinstance(t, str) and t.strip() for t in raw_cmd)):
+            cmd = list(raw_cmd)
+        raw_cwd = launch.get("cwd")
+        if isinstance(raw_cwd, str) and raw_cwd.strip():
+            try:
+                from paths import expand_path
+                cwd = expand_path(raw_cwd, os.path.dirname(os.path.abspath(config_path)))
+            except Exception:
+                cwd = ""
+    grace = _bounded(cfg.get("engine_grace_s", DEFAULT_ENGINE_GRACE_S), DEFAULT_ENGINE_GRACE_S)
+    engine_port = ENGINE_DEFAULT_PORT
+    upstream = str(cfg.get("upstream") or "")
+    if ":" in upstream:
+        tail = upstream.rpartition(":")[2]
+        tail = tail.split("/", 1)[0]
+        try:
+            engine_port = int(tail)
+        except (ValueError, TypeError, AttributeError):
+            pass
+    return (bool(cmd)), backend, cmd, cwd, grace, engine_port
+
+
 def port_is_up(host, port, timeout=PROBE_TIMEOUT_S):
     """Return True when a raw TCP connect to host:port succeeds.
 
@@ -231,6 +296,30 @@ def launch_ledger(args, log_fn):
     return proc
 
 
+def launch_engine(cwd, cmd, log_fn):
+    """Start the engine (Strata/Basalt) detached, same discipline as the proxy.
+
+    Every engine this watchdog starts is its own child; the port probe decides
+    whether it is needed. No creation-flag code runs on non-Windows platforms.
+    """
+    log_path = LOG_PATH
+    logf = open(log_path, "a", encoding="utf-8")
+    popen_kwargs = {
+        "cwd": cwd or HERE,
+        "stdin": subprocess.DEVNULL,
+        "stdout": logf,
+        "stderr": subprocess.STDOUT,
+        "close_fds": True,
+    }
+    if os.name == "nt":
+        popen_kwargs["creationflags"] = _DETACHED_PROCESS | _CREATE_NEW_PROCESS_GROUP
+    else:
+        popen_kwargs["start_new_session"] = True
+    proc = subprocess.Popen(cmd, **popen_kwargs)
+    log_fn(f"engine relaunch issued: pid={proc.pid} cmd={cmd!r}")
+    return proc
+
+
 def parse_args():
     ap = argparse.ArgumentParser(
         description="Token ledger watchdog (Strata/Basalt backends; team port follows config.json listen)")
@@ -285,9 +374,15 @@ def main():
             time.sleep(0.25)
 
     interval, cooldown = read_settings(args.config)
+    guard0, backend0, _, _, grace0, eport0 = read_engine_settings(args.config)
     log_fn(f"watchdog started; pid={os.getpid()}; probe={LEDGER_HOST}:{args.port}; "
            f"interval={interval:g}s (live from config); cooldown={cooldown:g}s; "
            f"python={sys.executable}; lock={args.lock_port}; wake={flag_path}")
+    if guard0:
+        log_fn(f"engine guard ON: backend={backend0 or 'unlabelled'} "
+               f"probe={LEDGER_HOST}:{eport0} (from upstream); grace={grace0:g}s")
+    else:
+        log_fn("engine guard off (guard_engine not true in config)")
     os.makedirs(os.path.dirname(args.config), exist_ok=True)
 
     flag_state = [None]
@@ -297,6 +392,8 @@ def main():
         flag_state[0] = 0.0
     last_launch = 0.0
     last_settings = (interval, cooldown)
+    last_engine_launch = 0.0
+    last_engine_settings = None
     cycle = 0
     while True:
         interval, cooldown = read_settings(args.config)
@@ -317,6 +414,30 @@ def main():
                     log_fn(f"DOWN: {LEDGER_HOST}:{args.port} still down; relaunch in cooldown, skip")
         except Exception:
             log_fn(f"watchdog loop ERROR: {traceback.format_exc()}")
+        # ---- engine guard (rev17; default off = nothing below ever runs) ----
+        try:
+            guard, backend, ecmd, ecwd, grace, eport = read_engine_settings(args.config)
+            if guard and ecmd:
+                if (guard, backend, eport) != last_engine_settings:
+                    log_fn(f"engine guard settings: backend={backend or 'unlabelled'} "
+                           f"probe={LEDGER_HOST}:{eport}")
+                    last_engine_settings = (guard, backend, eport)
+                if not port_is_up(LEDGER_HOST, eport):
+                    now = time.monotonic()
+                    if now - last_engine_launch < grace:
+                        left = grace - (now - last_engine_launch)
+                        log_fn(f"engine down ({backend or '?'}:{eport}) but in launch grace, "
+                               f"{left:g}s left; skip relaunch")
+                    elif now - last_engine_launch >= cooldown:
+                        log_fn(f"ENGINE DOWN: {LEDGER_HOST}:{eport} refused connection "
+                               f"-> relaunch ({backend or 'unlabelled'})")
+                        launch_engine(ecwd, ecmd, log_fn)
+                        last_engine_launch = now
+                    else:
+                        log_fn(f"ENGINE DOWN: {LEDGER_HOST}:{eport} still down; "
+                               f"relaunch in cooldown, skip")
+        except Exception:
+            log_fn(f"engine guard ERROR: {traceback.format_exc()}")
         cycle += 1
         if args.cycles and cycle >= args.cycles:
             log_fn(f"selftest: {cycle} cycles done, exiting")

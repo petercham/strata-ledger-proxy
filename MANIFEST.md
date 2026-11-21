@@ -1,6 +1,6 @@
 # 清单与来源登记
 
-发行版本：`token-ledger-proxy` 2026-11-09（2026-11-21 起更名：仓名/包名 `strata-ledger-proxy`→`token-ledger-proxy`，见 2.27 节；本次修订 2026-11-21 · rev16：双后端支持（Basalt `models[].parallel` 闸解析＋监视页 `/slots` 逐槽状态＋进度条速度表退路；见 2.26 节）；rev13：日报补排队闸拦截三指标（见 2.24 节）；rev12：排队闸拦截事件独立日志（`gate-events-YYYY-MM-DD.jsonl` 决策证据流：admitted/queued/released 三形态＋临界区在飞读数＋与记账账本严格分离；见 2.23 节）；rev11a：排队闸跟随形态回流（读数源＝`strata_config` 启动配置文件定死 `parallel` 值＋mtime 守卫缓存；rev11 运行时轮询系定向拆除）；rev11：排队闸跟随引擎实际并发（`gate_follow` 开关＋后台 `/v1/status` 读数缓存＋回退链——读源已被 rev11a 回流替换）；rev10a：排队闸 v3 维护小批（入队观测即时可见＋死字段注释＋票面勘误登记）；rev10：网关侧排队闸 v3（对话请求 FIFO 准入＋SSE 等待心跳）；另含 rev9 CPU 卡型号、rev8 后补的 `config-examples/` 样例、README 踩坑登记、真机截屏配图与省钱计算器口径＋价表随包；git 仓形态，无 ZIP）
+发行版本：`token-ledger-proxy` 2026-11-09（2026-11-21 起更名：仓名/包名 `strata-ledger-proxy`→`token-ledger-proxy`，见 2.27 节；本次修订 2026-11-22 · rev17：看门狗引擎看护（guard_engine 四键＋engine_launch＋grace；一快捷方式拉起全套；见 2.28 节）；rev16：双后端支持（Basalt `models[].parallel` 闸解析＋监视页 `/slots` 逐槽状态＋进度条速度表退路；见 2.26 节）；rev13：日报补排队闸拦截三指标（见 2.24 节）；rev12：排队闸拦截事件独立日志（`gate-events-YYYY-MM-DD.jsonl` 决策证据流：admitted/queued/released 三形态＋临界区在飞读数＋与记账账本严格分离；见 2.23 节）；rev11a：排队闸跟随形态回流（读数源＝`strata_config` 启动配置文件定死 `parallel` 值＋mtime 守卫缓存；rev11 运行时轮询系定向拆除）；rev11：排队闸跟随引擎实际并发（`gate_follow` 开关＋后台 `/v1/status` 读数缓存＋回退链——读源已被 rev11a 回流替换）；rev10a：排队闸 v3 维护小批（入队观测即时可见＋死字段注释＋票面勘误登记）；rev10：网关侧排队闸 v3（对话请求 FIFO 准入＋SSE 等待心跳）；另含 rev9 CPU 卡型号、rev8 后补的 `config-examples/` 样例、README 踩坑登记、真机截屏配图与省钱计算器口径＋价表随包；git 仓形态，无 ZIP）
 用途：给另一台机器（代号 5090）替换旧的「旁路边读引擎日志」账本链的**独立工具包**。
 运行要求：本机 Python 3.13 实测通过；3.8 未实测，静态检查未见 3.9+ 专有语法（内置泛型下标 `list[...]`、`X | Y` 联合类型、match 语句等均未使用）。主链仅标准库；`psutil` 与 `nvidia-smi` 为监控增强，缺失时自动降级。目标机若用更旧版本，请先跑 `bootstrap.py --selftest` 验证。
 
@@ -482,6 +482,20 @@ selftest 2026-11-21 转正复跑：monitor 57/57、proxy 45/45、watchdog 16 pas
 | CHANGELOG/MANIFEST 历史节旧名 | **不改**——历史登记当时事实；仅发行版本表头加更名说明 | 同上 |
 
 功能代码零触碰（除 argparse 描述行与注释）；更名后四套自测复跑全绿（见 2.26 复跑读数口径）。
+
+### 2.28 rev17：看门狗引擎看护——一快捷方式拉起全套（2026-11-22 · 功能新增 · 四套全绿）
+
+背景（人类直令）：看门狗同时看守反代与其后端引擎；当前后端（Strata/Basalt）直接在看门狗配置里声明；Windows 启动目录只留一个看门狗入口即可拉起全套。此前引擎自启挂在独立登录自启链（Strata autostart.bat），与看门狗双入口并存。
+
+| 文件 | 改动 | 为什么 |
+|---|---|---|
+| `ledger_watchdog.py` | 新增 `read_engine_settings()`（每轮热读：`guard_engine`/`engine_backend`/`engine_launch{cmd,cwd}`/`engine_grace_s`）＋`launch_engine()`（detached 子进程，同反代纪律）＋主循环引擎看护段（独立 try，异常不拖垮反代循环）；upstream 尾端口解析（含 IPv6 括号形制）；启动日志 guard ON/off 两态明示 | 缺省 `guard_engine=false`＝与 rev16 逐字节一致＝缺省零回归沿例；cmd 非法当轮静默关闸＝坏配置不崩循环；grace（缺省 120s）＝模型加载期端口本就关，防重复拉爆显存 |
+| `config.template.json` | 四键入模板＋comment 登记（含划界：Strata 官方壳自带 restart，用 Strata 保持 false 勿双看护） | 配置即口径真源 |
+| `selftest_watchdog.py` | 16→**31**：看护单测 8＋集成 7（热开闸/拉起/宽限抑制计数=1/宽限后补拉计数=2/反代存活/缺省日志态/日志标注） | 行为面全覆盖 |
+
+划界：引擎带外启动＝看门狗不认领进程所有权、仍按端口探测；Basalt 的 serve 壳自带"壳内引擎"restart，壳进程本身无人看＝Basalt 开 guard；Strata 官方壳自带引擎看护＝保持 guard 关。在岗部署＝config.json 加四键（basalt 形制 cmd 抄 `basalt/run-basalt.bat`）＋启动目录收敛为单入口（旧两条自启链件移出留档，旧 usage 采集链随 autostart 退役——账本已由本包接管）。
+
+selftest：watchdog 31/0、proxy 45/45、monitor 57/57、daily_report 15/15（2026-11-22 本机复跑）。
 
 ## 三、如实登记：代码分叉
 
