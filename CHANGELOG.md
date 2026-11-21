@@ -4,6 +4,16 @@
 
 ---
 
+## 2026-11-22（本地补丁 · 未推送）· 反代控制台输出独立落 `collector-proxy.log`
+
+- **症状**：客户端请求中途断开时，Python `socketserver` 会往子进程 stderr 打整段 traceback；此前子进程 stdout/stderr 与看门狗自己的日志共用 `ledger-watchdog.log`，把 probe/relaunch 这些运维第一眼要看的行埋掉。
+- **改动**：`ledger_watchdog.py` 的 `launch_ledger()` 把子进程输出改到 `<日志目录>/collector-proxy.log`（`CHILD_LOG_NAME` 常量）；`Popen` 后关闭父进程持有的文件句柄，修掉每次重启泄漏一个 fd 的老问题。
+- **不动面**：看门狗自身日志、重启判定、端口与锁语义全部不变；子进程仍 `DETACHED_PROCESS`，仍由看门狗单独养活。
+- **验证**：`selftest_watchdog.py` 16/16、`bootstrap.py --selftest` 三套全绿。
+- **生效时点**：无需停机——新代码在下一次看门狗/反代重启（含重开机）时接管；改动前已在跑的进程仍写旧文件，直到它自己换代。
+
+---
+
 ## 2026-11-21（更名）· 仓名/包名 strata-ledger-proxy → token-ledger-proxy（决策者拍板 · 功能代码零触碰）
 
 - **动机**：旧名无 llm/token/usage 任一搜索词，外部发现性最弱；曾议「保留 strata」口径作废。

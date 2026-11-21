@@ -67,6 +67,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)              # find paths.py however this module is loaded
 CONFIG_PATH = os.path.join(HERE, "config.json")
 LOG_PATH = os.path.join(HERE, "ledger-watchdog.log")
+CHILD_LOG_NAME = "collector-proxy.log"   # the proxy's own console output
 WAKE_FLAG_NAME = "relaunch-now.flag"
 
 LEDGER_HOST = "127.0.0.1"
@@ -203,7 +204,12 @@ def launch_ledger(args, log_fn):
     cmd = (split_cmd(args.launch_cmd) if args.launch_cmd
            else [sys.executable, resolve_collector(args.config), "--config", args.config])
     log_path = args.log or LOG_PATH
-    logf = open(log_path, "a", encoding="utf-8")
+    # The child's console output gets its own file. Sharing the watchdog log
+    # meant every client that aborted mid-request made socketserver dump a
+    # traceback into it, burying the probe/relaunch lines an operator reads
+    # first. Destination: <log dir>/collector-proxy.log.
+    child_log = os.path.join(os.path.dirname(log_path) or ".", CHILD_LOG_NAME)
+    logf = open(child_log, "a", encoding="utf-8")
     # Windows detaches via creation flags. On POSIX, start a NEW SESSION so the
     # child leaves our process group: a SIGHUP from a closing terminal or a
     # dropped SSH connection can no longer take the ledger down with the
@@ -220,6 +226,7 @@ def launch_ledger(args, log_fn):
     else:
         popen_kwargs["start_new_session"] = True
     proc = subprocess.Popen(cmd, **popen_kwargs)
+    logf.close()   # the child kept its own handle; the parent must not leak one
     log_fn(f"relaunch issued: pid={proc.pid} cmd={cmd!r}")
     return proc
 
